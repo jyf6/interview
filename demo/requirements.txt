@@ -1,0 +1,14 @@
+# LangChain 生态
+langchain==1.3.*
+langchain-openai==1.3.*
+langgraph==1.2.*
+
+# Web 框架
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+
+# 工具
+python-dotenv==1.0.*
+pydantic==2.*
+pydantic-settings==2.*
+httpx==0.28.*
