@@ -1,159 +1,132 @@
-# 银发传记采访引导 Demo
+# Interview Agent Demo
 
-这是一个用于验证「银发传记」采访引导模块的最小可用 Demo。当前版本包含后端 FastAPI 服务、静态测试前端、产品入场引导、开场白生成、卡片引导、采访对话和每轮情绪分析展示。
+FastAPI + Redis + DashScope + Vue3 demo for a conversation-style interview guidance flow.
 
-## 功能概览
+The project has been merged into a single app:
 
-- 自动入场：打开测试页后自动创建会话并展示开场白。
-- 产品使用说明：每次进入页面自动弹出 5 步使用引导。
-- 开场白生成：调用 DashScope 兼容 OpenAI 接口生成温和开场白。
-- 卡片引导：支持「直接开始采访」和「我还没想好怎么说」两条路径。
-- 采访对话：进入采访后持续与用户对话，引导补充经历细节。
-- 情绪分析：每轮用户输入后调用模型做单条情绪分析，并把中文摘要展示在 AI 回复末尾。
-- 测试页面：`demo/test_page.html` 是纯静态 HTML，可直接作为联调验证页面。
+- Backend owns the Redis-backed state machine and card guidance flow.
+- Frontend uses a chat-style interface with message bubbles and selectable cards.
+- The imported `-` demo has been folded into this project as the opening-dialog flow.
 
-## 项目结构
+## Runtime
 
-```text
-demo/
-  main.py                     FastAPI 入口
-  test_page.html              前端测试页面
-  test_integration.py         集成测试脚本
-  requirements.txt            Python 依赖
-  .env.example                环境变量示例
-  config/
-    app_config.py             应用配置
-    cards_config.py           卡片配置
-    onboarding_config.py      产品使用说明配置
-    prompts_config.py         提示词配置
-  core/
-    llm_client.py             DashScope LLM 客户端
-    models.py                 Pydantic 数据模型
-    session_manager.py        内存会话管理
-    state_machine.py          状态机
-  handlers/
-    opening_handler.py        开场白处理
-    guidance_handler.py       卡片引导处理
-    interview_handler.py      采访对话处理
-    emotion_handler.py        情绪分析处理
-    onboarding_handler.py     产品使用说明处理
-```
-
-## 环境准备
-
-建议使用 Python 3.12。
+The original `.venv` points to a missing local Python 3.12.10 installation on this machine. A working project-local Python 3.12 environment has been created at:
 
 ```powershell
-cd demo
-python -m venv venv
-venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+.\.venv312\python.exe
 ```
 
-复制环境变量文件：
+Verified versions:
+
+```text
+Python 3.12.13
+FastAPI 0.136.3
+LangChain 1.3.6
+LangGraph 1.2.4
+Redis 6.4.0
+```
+
+## Start Backend
+
+Make sure Redis is running at `redis://localhost:6379/0`, then start the backend:
 
 ```powershell
-Copy-Item .env.example .env
+.\scripts\start-backend.bat
 ```
 
-然后在 `demo/.env` 中填写：
+API docs:
 
-```text
-DASHSCOPE_API_KEY=你的 DashScope API Key
-DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL=qwen-plus
-```
+- http://127.0.0.1:8000/docs
+- http://127.0.0.1:8000/api/v1/health
 
-注意：`.env` 已加入 `.gitignore`，不要把真实 Key 提交到仓库。
-
-## 启动后端
+## Start Frontend
 
 ```powershell
-cd demo
-venv\Scripts\Activate.ps1
-python main.py
+.\scripts\start-frontend.bat
 ```
 
-服务默认运行在：
+Frontend URL:
 
-```text
-http://127.0.0.1:8000
-```
+- http://127.0.0.1:5173
 
-接口文档：
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-## 打开前端测试页
-
-直接用浏览器打开：
-
-```text
-demo/test_page.html
-```
-
-如果浏览器跨域或文件协议限制影响测试，也可以在 `demo` 目录启动静态服务：
+You can also start both backend and frontend together:
 
 ```powershell
-python -m http.server 8010 --bind 127.0.0.1
+.\scripts\start-all.bat
 ```
 
-然后访问：
+## Main Flow
+
+The frontend calls the dialog endpoints:
+
+```http
+POST /api/v1/interview/dialog/start
+POST /api/v1/interview/dialog/actions
+```
+
+Flow:
 
 ```text
-http://127.0.0.1:8010/test_page.html
+Opening message
+  -> entry cards
+  -> guidance cards when user needs help
+  -> DashScope/fallback comfort message
+  -> entry cards again
+  -> READY_TO_INTERVIEW
 ```
 
-## 主要接口
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/health` | 健康检查 |
-| GET | `/api/onboarding/guide` | 获取产品使用说明配置 |
-| POST | `/api/session/start` | 创建会话并生成开场白 |
-| POST | `/api/session/{id}/card` | 选择卡片 |
-| POST | `/api/session/{id}/guidance` | 展示心理状态卡片 |
-| POST | `/api/session/{id}/enter` | 进入采访阶段 |
-| POST | `/api/session/{id}/chat` | 发送采访对话 |
-| GET | `/api/session/{id}/status` | 查询会话状态 |
-
-## 当前流程
+Redis state machine states:
 
 ```text
-页面打开
-  -> 自动加载产品使用说明
-  -> 自动创建会话
-  -> 生成开场白
-  -> 用户选择开始采访或引导卡片
-  -> 进入采访
-  -> 每轮用户输入
-      -> 单条情绪分析
-      -> 采访回复生成
-      -> 在回复末尾展示中文情绪摘要
+INIT
+OPENING_GENERATING
+OPENING_DELIVERED
+GUIDANCE_CARD
+READY_TO_INTERVIEW
+INTERVIEWING
 ```
 
-情绪摘要示例：
+## Dialog Response Shape
 
-```text
-（情绪=怀念；风险=低；参与度=高；动作=柔和追问）
+```json
+{
+  "session_id": "...",
+  "current_state": "GUIDANCE_CARD",
+  "previous_state": "OPENING_DELIVERED",
+  "action": "show_guidance_cards",
+  "message": {
+    "role": "assistant",
+    "content": "没关系，您可以先选一个最接近现在感受的卡片..."
+  },
+  "cards": [
+    {
+      "card_id": "dont_know_process",
+      "label": "我不太了解采访会怎么进行"
+    }
+  ],
+  "card_group": "guidance",
+  "guidance_round": 0,
+  "max_guidance_rounds": 3,
+  "can_continue_guidance": true,
+  "response_source": "none"
+}
 ```
 
-## 集成测试
+## Verification
 
-先启动后端，然后运行：
+Commands already run successfully:
 
 ```powershell
-cd demo
-venv\Scripts\Activate.ps1
-python test_integration.py
+.\.venv312\python.exe -m pip check
+.\.venv312\python.exe -m compileall app
+cmd /c npm run build
 ```
 
-## 后续可扩展方向
+The FastAPI route flow was also verified with a test client:
 
-- 将内存会话存储替换为 Redis。
-- 将长期状态和情绪报告沉淀到数据库。
-- 将情绪分析与采访回复并行，降低每轮延迟。
-- 接入专用采访 Agent 模型和独立情绪分析模型。
-- 将 `test_page.html` 替换为正式产品前端模块。
+```text
+/api/v1/interview/dialog/start
+  -> /api/v1/interview/dialog/actions need_guidance
+  -> /api/v1/interview/dialog/actions dont_know_process
+  -> /api/v1/interview/dialog/actions start_interview
+```
