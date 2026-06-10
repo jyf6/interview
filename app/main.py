@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -7,6 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.redis import close_redis, init_redis
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 @asynccontextmanager

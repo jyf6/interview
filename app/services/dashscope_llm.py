@@ -1,11 +1,14 @@
+import asyncio
 import json
 import logging
 import re
 from typing import Any
 
-import httpx
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.config import settings
+from app.core.llm_client import interview_llm
+from app.core.perf import perf_span
 from app.data.interview_cards import ENTRY_CARDS
 
 logger = logging.getLogger(__name__)
@@ -24,44 +27,18 @@ class DashScopeLLM:
 
         prompt = self._build_prompt(card_id, card_corpus)
         try:
-            async with httpx.AsyncClient(timeout=settings.dashscope_timeout_seconds) as client:
-                response = await client.post(
-                    f"{settings.dashscope_base_url.rstrip('/')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {settings.dashscope_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": settings.dashscope_model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": settings.dashscope_system_prompt,
-                            },
-                            {
-                                "role": "user",
-                                "content": prompt,
-                            },
-                        ],
-                        "temperature": 0.4,
-                    },
+            with perf_span("llm.guidance.invoke", model=interview_llm.model, card_id=card_id):
+                response = await asyncio.to_thread(
+                    interview_llm.get_llm(temperature=0.4).invoke,
+                    [
+                        SystemMessage(content=settings.dashscope_system_prompt),
+                        HumanMessage(content=prompt),
+                    ],
                 )
-                response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "DashScope request failed: status=%s body=%s",
-                exc.response.status_code,
-                exc.response.text[:1000],
-            )
-            return self._fallback(fallback_message)
-        except httpx.HTTPError as exc:
-            logger.warning("DashScope request error: %s", exc)
-            return self._fallback(fallback_message)
-
-        try:
-            content = response.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            logger.warning("DashScope response schema is unexpected: error=%s body=%s", exc, response.text[:1000])
+            content = response.content if hasattr(response, "content") else str(response)
+            content = content.strip() if isinstance(content, str) else str(content).strip()
+        except Exception as exc:
+            logger.warning("DashScope guidance generation failed model=%s error=%s", interview_llm.model, exc)
             return self._fallback(fallback_message)
 
         parsed = self._parse_json(content)

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Request
 from app.schemas.interview import (
     DialogActionRequest,
     DialogStartRequest,
+    DialogTextRequest,
     DialogTurnResponse,
     EntryCardSelection,
     GuidanceCardResponse,
@@ -31,14 +32,14 @@ async def get_onboarding_guide(
     return service.build_guide()
 
 
-@router.get("/strat-interview", response_model=StartInterviewResponse)
+@router.get("/start-interview", response_model=StartInterviewResponse)
 async def start_interview_flow(
     machine: InterviewStateMachine = Depends(get_interview_machine),
 ) -> StartInterviewResponse:
     return await machine.start()
 
 
-@router.post("/strat-interview", response_model=StartInterviewResponse)
+@router.post("/start-interview", response_model=StartInterviewResponse)
 async def select_entry_card(
     payload: EntryCardSelection,
     machine: InterviewStateMachine = Depends(get_interview_machine),
@@ -68,3 +69,11 @@ async def handle_dialog_action(
     machine: InterviewStateMachine = Depends(get_interview_machine),
 ) -> DialogTurnResponse:
     return await machine.handle_dialog_action(payload)
+
+
+@router.post("/interview/dialog/text", response_model=DialogTurnResponse)
+async def handle_dialog_text(
+    payload: DialogTextRequest,
+    machine: InterviewStateMachine = Depends(get_interview_machine),
+) -> DialogTurnResponse:
+    return await machine.handle_dialog_text(payload)

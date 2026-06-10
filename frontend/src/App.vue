@@ -1,51 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { sendDialogAction, startDialog } from './api/interview'
-
-const FIXED_ONBOARDING_GUIDE = {
-  guide_id: 'interview-dialog-onboarding',
-  version: '1.0.0',
-  title: '采访助手使用引导',
-  description: '帮助用户理解开场白、卡片选择、引导卡片和正式采访入口。',
-  steps: [
-    {
-      step_id: 'chat_panel',
-      sequence: 1,
-      title: '这里是对话区',
-      body: '开场白、安抚回复和你的选择都会按聊天形式展示在这里。',
-      target_key: 'chat_panel',
-      placement: 'center',
-      primary_action_label: '知道了',
-    },
-    {
-      step_id: 'entry_cards',
-      sequence: 2,
-      title: '先选择下一步',
-      body: '你可以直接开始采访，也可以选择需要引导，让系统继续给出更细的帮助卡片。',
-      target_key: 'card_options',
-      placement: 'top',
-      primary_action_label: '下一步',
-    },
-    {
-      step_id: 'composer',
-      sequence: 3,
-      title: '准备好后再输入',
-      body: '完成采访前引导后，底部输入框会解锁，用来承接后续正式采访对话。',
-      target_key: 'composer',
-      placement: 'top',
-      primary_action_label: '下一步',
-    },
-    {
-      step_id: 'reset',
-      sequence: 4,
-      title: '可以重新开始',
-      body: '如果想重新体验开场白和卡片流程，可以从这里创建一轮新的会话。',
-      target_key: 'reset_button',
-      placement: 'bottom',
-      primary_action_label: '完成',
-    },
-  ],
-}
+import { getOnboardingGuide, sendDialogAction, sendDialogText, startDialog } from './api/interview'
 
 const loading = ref(false)
 const error = ref('')
@@ -166,11 +121,20 @@ async function run(actionFn) {
   }
 }
 
-function startOnboardingGuide() {
-  onboardingGuide.value = FIXED_ONBOARDING_GUIDE
-  onboardingActive.value = true
-  onboardingIndex.value = 0
-  refreshOnboardingTarget()
+async function startOnboardingGuide() {
+  try {
+    const guide = await getOnboardingGuide()
+    if (!guide?.steps?.length) return
+    onboardingGuide.value = {
+      ...guide,
+      steps: [...guide.steps].sort((a, b) => a.sequence - b.sequence),
+    }
+    onboardingActive.value = true
+    onboardingIndex.value = 0
+    refreshOnboardingTarget()
+  } catch (err) {
+    console.warn('Failed to load onboarding guide', err)
+  }
 }
 
 async function resetDialog() {
@@ -203,12 +167,18 @@ async function chooseCard(card) {
   })
 }
 
-function sendText() {
+async function sendText() {
   const text = inputText.value.trim()
   if (!text) return
   appendMessage('user', text)
   inputText.value = ''
-  appendMessage('assistant', '这部分已经收到。正式采访智能体接入后，这里会继续追问、整理和生成采访内容。')
+  await run(async () => {
+    const data = await sendDialogText({
+      session_id: sessionId.value,
+      content: text,
+    })
+    applyTurn(data)
+  })
 }
 
 function getTargetElement(targetKey) {
@@ -247,7 +217,7 @@ onMounted(async () => {
   window.addEventListener('resize', handleWindowChange)
   window.addEventListener('scroll', handleWindowChange, true)
   await resetDialog()
-  startOnboardingGuide()
+  await startOnboardingGuide()
 })
 
 onBeforeUnmount(() => {
@@ -341,7 +311,14 @@ onBeforeUnmount(() => {
         <h2>{{ activeStep.title }}</h2>
         <p>{{ activeStep.body }}</p>
         <div class="onboarding-actions">
-          <button type="button" class="text-button" @click="closeOnboarding">跳过</button>
+          <button
+            type="button"
+            class="text-button"
+            data-onboarding-target="guide_skip_button"
+            @click="closeOnboarding"
+          >
+            跳过
+          </button>
           <button type="button" class="primary-button" @click="nextOnboardingStep">
             {{ activeStep.primary_action_label }}
           </button>

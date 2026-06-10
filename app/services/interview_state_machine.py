@@ -1,13 +1,18 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from redis.asyncio import Redis
 
 from app.core.config import settings
+from app.core.perf import perf_span
 from app.data.interview_cards import CARD_RESPONSE_CORPUS, ENTRY_CARDS, GUIDANCE_CARDS, normalize_card_id
 from app.schemas.interview import (
     DialogActionRequest,
     DialogMessage,
+    DialogTextRequest,
     DialogTurnResponse,
     EntryCardSelection,
     GuidanceCardResponse,
@@ -18,6 +23,7 @@ from app.schemas.interview import (
     StartInterviewResponse,
 )
 from app.services.dashscope_llm import DashScopeLLM
+from app.services.interview_agent_service import InterviewAgentService
 from app.services.opening_service import OpeningService
 
 
@@ -25,6 +31,7 @@ class InterviewStateMachine:
     def __init__(self, redis: Redis):
         self.redis = redis
         self.llm = DashScopeLLM()
+        self.interview_agent = InterviewAgentService()
         self.opening = OpeningService()
 
     async def start(self) -> StartInterviewResponse:
@@ -39,10 +46,11 @@ class InterviewStateMachine:
         )
 
     async def start_dialog(self, session_id: str | None = None) -> DialogTurnResponse:
-        context = await self._get_or_create_context(session_id)
-        self._transition(context, "OPENING_GENERATING")
-        self._transition(context, "OPENING_DELIVERED")
-        await self._save_context(context)
+        with perf_span("dialog.start", has_session=bool(session_id)):
+            context = await self._get_or_create_context(session_id)
+            self._transition(context, "OPENING_GENERATING")
+            self._transition(context, "OPENING_DELIVERED")
+            await self._save_context(context)
 
         return DialogTurnResponse(
             session_id=context.session_id,
@@ -69,6 +77,40 @@ class InterviewStateMachine:
             return await self._show_guidance_cards(context)
 
         return await self._handle_guidance_card(context, card_id)
+
+    async def handle_dialog_text(self, payload: DialogTextRequest) -> DialogTurnResponse:
+        with perf_span("dialog.text.total", has_session=bool(payload.session_id), chars=len(payload.content)):
+            context = await self._get_or_create_context(payload.session_id)
+            if context.current_state == "READY_TO_INTERVIEW":
+                self._transition(context, "INTERVIEWING")
+            elif context.current_state != "INTERVIEWING":
+                self._transition(context, "READY_TO_INTERVIEW")
+                self._transition(context, "INTERVIEWING")
+
+            user_content = payload.content.strip()
+            context.dialog_messages.append({"role": "user", "content": user_content})
+
+            assistant_content, _emotion = await self.interview_agent.generate_turn(
+                user_message=user_content,
+                recent_messages=context.dialog_messages,
+            )
+            context.dialog_messages.append({"role": "assistant", "content": assistant_content})
+            context.updated_at = datetime.now(UTC)
+            await self._save_context(context)
+
+        return DialogTurnResponse(
+            session_id=context.session_id,
+            current_state=context.current_state,
+            previous_state=context.previous_state,
+            action="append_message",
+            message=DialogMessage(content=assistant_content),
+            cards=[],
+            card_group="none",
+            guidance_round=context.guidance_round,
+            max_guidance_rounds=context.max_guidance_rounds,
+            can_continue_guidance=False,
+            response_source="llm",
+        )
 
     async def select_entry_card(self, payload: EntryCardSelection) -> StartInterviewResponse:
         response = await self.handle_dialog_action(
@@ -102,6 +144,12 @@ class InterviewStateMachine:
 
     async def _ready_to_interview(self, context: InterviewContext) -> DialogTurnResponse:
         self._transition(context, "READY_TO_INTERVIEW")
+        context.dialog_messages.append(
+            {
+                "role": "assistant",
+                "content": "好的，我们准备开始采访。您可以从一个人、一个地方，或一件小事慢慢说起。",
+            }
+        )
         await self._save_context(context)
         return DialogTurnResponse(
             session_id=context.session_id,
@@ -214,17 +262,33 @@ class InterviewStateMachine:
         return context
 
     async def _get_context(self, session_id: str) -> InterviewContext | None:
-        raw = await self.redis.get(self._key(session_id))
+        raw = await self._redis_get(self._key(session_id))
         if raw is None:
             return None
         return InterviewContext.model_validate_json(raw)
 
     async def _save_context(self, context: InterviewContext) -> None:
-        await self.redis.set(
-            self._key(context.session_id),
-            context.model_dump_json(),
-            ex=settings.session_ttl_seconds,
-        )
+        await self._redis_set(self._key(context.session_id), context.model_dump_json())
+
+    async def _redis_get(self, key: str) -> str | None:
+        for attempt in range(2):
+            try:
+                return await self.redis.get(key)
+            except (RedisConnectionError, RedisTimeoutError):
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.08)
+        return None
+
+    async def _redis_set(self, key: str, value: str) -> None:
+        for attempt in range(2):
+            try:
+                await self.redis.set(key, value, ex=settings.session_ttl_seconds)
+                return
+            except (RedisConnectionError, RedisTimeoutError):
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.08)
 
     @staticmethod
     def _transition(context: InterviewContext, to_state: InterviewState) -> None:

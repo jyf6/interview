@@ -31,6 +31,13 @@ export function sendDialogAction(payload) {
   })
 }
 
+export function sendDialogText(payload) {
+  return request('/interview/dialog/text', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getOnboardingGuide() {
   return request('/interview/onboarding/guide')
 }

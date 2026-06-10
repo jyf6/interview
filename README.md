@@ -1,55 +1,65 @@
 # Interview Agent Demo
 
-FastAPI + Redis + DashScope + Vue3 demo for a conversation-style interview guidance flow.
+FastAPI + Redis + DashScope + Vue 3 demo for the silver-age biography interview module.
 
-The project has been merged into a single app:
+This version follows the current `jin` branch structure:
 
-- Backend owns the Redis-backed state machine and card guidance flow.
-- Frontend uses a chat-style interface with message bubbles and selectable cards.
-- The imported `-` demo has been folded into this project as the opening-dialog flow.
+- Backend owns the Redis-backed state machine, opening dialog, guidance cards, and formal interview turns.
+- Frontend is only a lightweight test page that adapts to backend dialog endpoints.
+- DashScope is split into two roles: one interview model and one emotion analysis model.
+- Guidance-card generation and formal interview replies share `DASHSCOPE_INTERVIEW_MODEL`.
+- Each formal assistant reply appends the emotion analysis result in parentheses for demo display.
 
-## Runtime
+## Environment
 
-The original `.venv` points to a missing local Python 3.12.10 installation on this machine. A working project-local Python 3.12 environment has been created at:
+Create and install dependencies in the project-local virtual environment:
 
 ```powershell
-.\.venv312\python.exe
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Verified versions:
+Install frontend dependencies:
 
-```text
-Python 3.12.13
-FastAPI 0.136.3
-LangChain 1.3.6
-LangGraph 1.2.4
-Redis 6.4.0
+```powershell
+cd frontend
+npm.cmd ci --cache .\.npm-cache
 ```
 
-## Start Backend
+## Configuration
 
-Make sure Redis is running at `redis://localhost:6379/0`, then start the backend:
+Copy `.env.example` to `.env` and fill your local values:
+
+```env
+REDIS_URL=redis://localhost:6379/0
+DASHSCOPE_API_KEY=
+DASHSCOPE_INTERVIEW_MODEL=qwen3-8b_210samples
+DASHSCOPE_EMOTION_MODEL=qwen-turbo
+```
+
+`DASHSCOPE_INTERVIEW_MODEL` is used by both the guidance-card generator and the interview agent. `DASHSCOPE_EMOTION_MODEL` is used for per-turn emotion analysis. If no DashScope key is configured, the backend returns local fallback replies so the flow can still be tested.
+
+## Start
+
+Make sure Redis is running locally, then start the backend:
 
 ```powershell
 .\scripts\start-backend.bat
 ```
 
-API docs:
-
-- http://127.0.0.1:8000/docs
-- http://127.0.0.1:8000/api/v1/health
-
-## Start Frontend
+Start the frontend test page:
 
 ```powershell
 .\scripts\start-frontend.bat
 ```
 
-Frontend URL:
+Useful URLs:
 
-- http://127.0.0.1:5173
+- Frontend: http://127.0.0.1:5173
+- API docs: http://127.0.0.1:8000/docs
+- Health check: http://127.0.0.1:8000/api/v1/health
 
-You can also start both backend and frontend together:
+You can also start both windows together:
 
 ```powershell
 .\scripts\start-all.bat
@@ -57,11 +67,13 @@ You can also start both backend and frontend together:
 
 ## Main Flow
 
-The frontend calls the dialog endpoints:
+The frontend calls these dialog endpoints:
 
 ```http
 POST /api/v1/interview/dialog/start
 POST /api/v1/interview/dialog/actions
+POST /api/v1/interview/dialog/text
+GET  /api/v1/interview/onboarding/guide
 ```
 
 Flow:
@@ -69,10 +81,10 @@ Flow:
 ```text
 Opening message
   -> entry cards
-  -> guidance cards when user needs help
-  -> DashScope/fallback comfort message
-  -> entry cards again
+  -> optional guidance cards
   -> READY_TO_INTERVIEW
+  -> INTERVIEWING
+  -> interview reply + emotion display
 ```
 
 Redis state machine states:
@@ -86,47 +98,12 @@ READY_TO_INTERVIEW
 INTERVIEWING
 ```
 
-## Dialog Response Shape
-
-```json
-{
-  "session_id": "...",
-  "current_state": "GUIDANCE_CARD",
-  "previous_state": "OPENING_DELIVERED",
-  "action": "show_guidance_cards",
-  "message": {
-    "role": "assistant",
-    "content": "没关系，您可以先选一个最接近现在感受的卡片..."
-  },
-  "cards": [
-    {
-      "card_id": "dont_know_process",
-      "label": "我不太了解采访会怎么进行"
-    }
-  ],
-  "card_group": "guidance",
-  "guidance_round": 0,
-  "max_guidance_rounds": 3,
-  "can_continue_guidance": true,
-  "response_source": "none"
-}
-```
-
 ## Verification
 
-Commands already run successfully:
+Commands used for local verification:
 
 ```powershell
-.\.venv312\python.exe -m pip check
-.\.venv312\python.exe -m compileall app
-cmd /c npm run build
-```
-
-The FastAPI route flow was also verified with a test client:
-
-```text
-/api/v1/interview/dialog/start
-  -> /api/v1/interview/dialog/actions need_guidance
-  -> /api/v1/interview/dialog/actions dont_know_process
-  -> /api/v1/interview/dialog/actions start_interview
+.\.venv\Scripts\python.exe -m py_compile app\core\config.py app\schemas\interview.py app\services\dashscope_llm.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\api\v1\routes\interview.py app\main.py
+cd frontend
+npm.cmd run build
 ```
