@@ -9,6 +9,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv312/
 venv/
 env/
 demo/venv/
@@ -39,3 +40,11 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.npm-cache/
+
+# Demo
+demo/
