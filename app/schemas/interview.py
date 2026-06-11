@@ -43,12 +43,12 @@ class EmotionAnalysisOutput(BaseModel):
     def to_display_text(self) -> str:
         emotion_labels = {
             "joy": "愉悦",
-            "engagement": "专注",
-            "nostalgia": "怀念",
-            "anxiety": "焦虑/警惕",
+            "engagement": "投入",
+            "nostalgia": "怀旧",
+            "anxiety": "焦虑/担心",
             "frustration": "烦躁/沮丧",
-            "apathy": "敷衍/冷淡",
-            "defensive": "防御/抵抗",
+            "apathy": "冷淡/低参与",
+            "defensive": "防御/抗拒",
             "sadness": "悲伤",
         }
         risk_labels = {"low": "低", "medium": "中", "high": "高"}
@@ -75,6 +75,7 @@ class EmotionAnalysisOutput(BaseModel):
             parts.append(f"动作={action}")
         return "；".join(parts)
 
+
 InterviewState = Literal[
     "INIT",
     "OPENING_GENERATING",
@@ -85,10 +86,16 @@ InterviewState = Literal[
 ]
 EntryCardId = Literal["start_interview", "need_guidance", "need_more_guidance"]
 GuidanceCardId = Literal[
+    "relaxed_slow",
+    "emotional_memory",
+    "unknown_process",
+    "restrained",
+    "enthusiastic",
+    "scattered",
+    "worry_privacy",
     "dont_know_process",
     "dont_know_start_point",
     "worry_not_good_at_talking",
-    "worry_privacy",
     "want_example_first",
     "need_guidance",
     "need_more_guidance",
@@ -97,10 +104,16 @@ DialogCardId = Literal[
     "start_interview",
     "need_guidance",
     "need_more_guidance",
+    "relaxed_slow",
+    "emotional_memory",
+    "unknown_process",
+    "restrained",
+    "enthusiastic",
+    "scattered",
+    "worry_privacy",
     "dont_know_process",
     "dont_know_start_point",
     "worry_not_good_at_talking",
-    "worry_privacy",
     "want_example_first",
 ]
 DialogAction = Literal[

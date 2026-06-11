@@ -33,15 +33,23 @@ Copy `.env.example` to `.env` and fill your local values:
 ```env
 REDIS_URL=redis://localhost:6379/0
 DASHSCOPE_API_KEY=
-DASHSCOPE_INTERVIEW_MODEL=qwen3-8b_210samples
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_MODEL=qwen-plus
+DASHSCOPE_INTERVIEW_MODEL=qwen-plus
 DASHSCOPE_EMOTION_MODEL=qwen-turbo
 ```
 
-`DASHSCOPE_INTERVIEW_MODEL` is used by both the guidance-card generator and the interview agent. `DASHSCOPE_EMOTION_MODEL` is used for per-turn emotion analysis. If no DashScope key is configured, the backend returns local fallback replies so the flow can still be tested.
+`DASHSCOPE_INTERVIEW_MODEL` is used by the opening generator, guidance-card generator, and interview agent. `DASHSCOPE_EMOTION_MODEL` is used for per-turn emotion analysis. If no DashScope key is configured, the backend returns local fallback replies so the flow can still be tested.
 
 ## Start
 
-Make sure Redis is running locally, then start the backend:
+Start Redis with Docker:
+
+```powershell
+.\scripts\start-redis.bat
+```
+
+Then start the backend. The backend script also ensures Redis is running:
 
 ```powershell
 .\scripts\start-backend.bat
@@ -103,7 +111,8 @@ INTERVIEWING
 Commands used for local verification:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile app\core\config.py app\schemas\interview.py app\services\dashscope_llm.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\api\v1\routes\interview.py app\main.py
+.\.venv\Scripts\python.exe -m py_compile app\core\config.py app\core\llm_client.py app\prompts\loader.py app\schemas\interview.py app\services\dashscope_llm.py app\services\emotion_service.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\services\llm_service.py app\services\opening_service.py app\api\v1\routes\interview.py app\main.py
 cd frontend
 npm.cmd run build
+docker compose -p interview-agent exec -T redis redis-cli ping
 ```

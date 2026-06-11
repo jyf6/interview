@@ -2,9 +2,9 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
-from redis.asyncio import Redis
 
 from app.core.config import settings
 from app.core.perf import perf_span
@@ -49,6 +49,7 @@ class InterviewStateMachine:
         with perf_span("dialog.start", has_session=bool(session_id)):
             context = await self._get_or_create_context(session_id)
             self._transition(context, "OPENING_GENERATING")
+            opening_message = await self.opening.build_opening_message()
             self._transition(context, "OPENING_DELIVERED")
             await self._save_context(context)
 
@@ -57,7 +58,7 @@ class InterviewStateMachine:
             current_state=context.current_state,
             previous_state=context.previous_state,
             action="show_entry_cards",
-            message=self.opening.build_opening_message(),
+            message=opening_message,
             cards=self.opening.build_entry_cards(),
             card_group="entry",
             guidance_round=context.guidance_round,
@@ -109,7 +110,7 @@ class InterviewStateMachine:
             guidance_round=context.guidance_round,
             max_guidance_rounds=context.max_guidance_rounds,
             can_continue_guidance=False,
-            response_source="llm",
+            response_source="llm" if settings.dashscope_api_key else "fallback",
         )
 
     async def select_entry_card(self, payload: EntryCardSelection) -> StartInterviewResponse:
@@ -143,20 +144,16 @@ class InterviewStateMachine:
         )
 
     async def _ready_to_interview(self, context: InterviewContext) -> DialogTurnResponse:
+        message = "好的，我们准备开始采访。您可以从一个人、一个地方，或一件小事慢慢说起。"
         self._transition(context, "READY_TO_INTERVIEW")
-        context.dialog_messages.append(
-            {
-                "role": "assistant",
-                "content": "好的，我们准备开始采访。您可以从一个人、一个地方，或一件小事慢慢说起。",
-            }
-        )
+        context.dialog_messages.append({"role": "assistant", "content": message})
         await self._save_context(context)
         return DialogTurnResponse(
             session_id=context.session_id,
             current_state=context.current_state,
             previous_state=context.previous_state,
             action="ready_to_interview",
-            message=DialogMessage(content="好的，我们准备开始采访。您可以从一个人、一个地方，或一件小事慢慢说起。"),
+            message=DialogMessage(content=message),
             cards=[],
             card_group="none",
             guidance_round=context.guidance_round,

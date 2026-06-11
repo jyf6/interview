@@ -1,12 +1,14 @@
 import asyncio
-import json
 import logging
 import time
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.core.llm_client import emotion_llm
 from app.core.perf import perf_span
+from app.prompts.loader import load_prompt, render_prompt
 from app.schemas.interview import (
     BoundarySignal,
     ConversationSignal,
@@ -15,25 +17,6 @@ from app.schemas.interview import (
 )
 
 logger = logging.getLogger(__name__)
-
-EMOTION_SINGLE_SYSTEM_PROMPT = (
-    "你只做采访情绪分类。输出严格 JSON，不要 Markdown。"
-    "不要做医学诊断。字段只允许：emotion,risk,engagement,action,slow,boundary。"
-)
-
-EMOTION_SINGLE_USER_PROMPT_TEMPLATE = """用户输入：{user_message}
-上一句助手：{last_assistant_message}
-
-取值：
-emotion=joy|engagement|nostalgia|anxiety|frustration|apathy|defensive|sadness
-risk=low|medium|high
-engagement=low|medium|high
-action=normal_follow_up|soft_follow_up|comfort|explain_boundary|change_topic|pause
-slow=true|false
-boundary=true|false
-
-只输出一行 JSON，例如：
-{{"emotion":"engagement","risk":"low","engagement":"medium","action":"normal_follow_up","slow":false,"boundary":false}}"""
 
 EMOTION_CACHE_TTL_SECONDS = 300
 EMOTION_CACHE_MAX_SIZE = 128
@@ -64,23 +47,25 @@ class EmotionService:
         if not settings.dashscope_api_key:
             return self._fallback_emotion(message_id, user_message)
 
-        user_prompt = EMOTION_SINGLE_USER_PROMPT_TEMPLATE.format(
+        user_prompt = render_prompt(
+            "emotion_single_user.txt",
             message_id=message_id,
             session_id="",
             user_message=user_message,
             last_assistant_message=last_assistant,
+            recent_emotion_summary=last_emotion,
         )
 
         try:
             with perf_span("llm.emotion.invoke", model=emotion_llm.model, chars=len(user_message)):
                 result = await asyncio.to_thread(
                     emotion_llm.chat_json,
-                    EMOTION_SINGLE_SYSTEM_PROMPT,
+                    load_prompt("emotion_single_system.txt"),
                     user_prompt,
                     temperature=0.2,
-                    max_tokens=64,
+                    max_tokens=512,
                 )
-            emotion = self._from_compact_result(message_id, result)
+            emotion = self._from_result(message_id, result)
             self._set_cached(user_message, emotion)
             return emotion
         except Exception as exc:
@@ -97,13 +82,13 @@ class EmotionService:
     @staticmethod
     def _fallback_emotion(message_id: str, user_message: str) -> EmotionAnalysisOutput:
         text = user_message.strip()
-        if any(word in text for word in ["不想说", "别问", "不方便", "隐私"]):
+        if any(word in text for word in ["不想说", "别问", "不方便", "隐私", "跳过"]):
             return EmotionAnalysisOutput(
                 message_id=message_id,
                 primary_emotion="defensive",
                 valence=-0.4,
                 arousal=0.5,
-                confidence=0.45,
+                confidence=0.55,
                 risk_level="medium",
                 engagement_level="low",
                 boundary_signal=BoundarySignal(has_refusal=True, has_privacy_concern=True),
@@ -114,14 +99,15 @@ class EmotionService:
                     should_ask_follow_up=False,
                 ),
                 recommended_action=RecommendedAction(
-                    action_type="explain_boundary", reason="用户出现拒绝或隐私边界信号"
+                    action_type="explain_boundary",
+                    reason="用户出现拒绝或隐私边界信号",
                 ),
             )
-        if any(word in text for word in ["怀念", "想起来", "那时候", "以前"]):
+        if any(word in text for word in ["怀念", "想起来", "那时候", "以前", "老家", "小时候"]):
             return EmotionAnalysisOutput(
                 message_id=message_id,
                 primary_emotion="nostalgia",
-                confidence=0.4,
+                confidence=0.45,
                 risk_level="low",
                 engagement_level="high",
                 conversation_signal=ConversationSignal(
@@ -131,7 +117,8 @@ class EmotionService:
                     should_ask_follow_up=True,
                 ),
                 recommended_action=RecommendedAction(
-                    action_type="soft_follow_up", reason="用户正在自然回忆过去"
+                    action_type="soft_follow_up",
+                    reason="用户正在自然回忆过去",
                 ),
             )
         if len(text) <= 8:
@@ -148,7 +135,8 @@ class EmotionService:
                     should_ask_follow_up=True,
                 ),
                 recommended_action=RecommendedAction(
-                    action_type="soft_follow_up", reason="用户回复较短，建议降低问题压力"
+                    action_type="soft_follow_up",
+                    reason="用户回复较短，建议降低问题压力",
                 ),
             )
         return EmotionAnalysisOutput(
@@ -164,7 +152,8 @@ class EmotionService:
                 should_ask_follow_up=True,
             ),
             recommended_action=RecommendedAction(
-                action_type="normal_follow_up", reason="用户仍在继续讲述"
+                action_type="normal_follow_up",
+                reason="用户仍在继续讲述",
             ),
         )
 
@@ -193,40 +182,84 @@ class EmotionService:
         text = user_message.strip()
         if len(text) > 24:
             return None
-        if any(word in text for word in ["不想说", "别问", "不方便", "隐私"]):
+        if any(word in text for word in ["不想说", "别问", "不方便", "隐私", "跳过"]):
             return self._fallback_emotion(message_id, text)
-        if any(word in text for word in ["怀念", "想起来", "那时候", "以前", "老家"]):
+        if any(word in text for word in ["怀念", "想起来", "那时候", "以前", "老家", "小时候"]):
             return self._fallback_emotion(message_id, text)
         if text in {"嗯", "哦", "好", "好的", "不知道", "没想好", "可以", "行"} or len(text) <= 4:
             return self._fallback_emotion(message_id, text)
         return None
 
     @staticmethod
-    def _from_compact_result(message_id: str, raw: dict[str, object]) -> EmotionAnalysisOutput:
-        emotion = str(raw.get("emotion") or raw.get("primary_emotion") or "engagement")
-        risk = str(raw.get("risk") or raw.get("risk_level") or "low")
-        engagement = str(raw.get("engagement") or raw.get("engagement_level") or "medium")
-        action = str(raw.get("action") or raw.get("recommended_action") or "normal_follow_up")
-        slow = bool(raw.get("slow", False))
-        boundary = bool(raw.get("boundary", False))
-        return EmotionAnalysisOutput(
-            message_id=message_id,
-            primary_emotion=emotion,
-            confidence=0.55,
-            risk_level=risk,
-            engagement_level=engagement,
-            boundary_signal=BoundarySignal(
-                has_refusal=boundary,
-                has_privacy_concern=boundary,
-            ),
-            conversation_signal=ConversationSignal(
-                input_intent="continue_story",
-                answer_quality="has_fact",
-                should_slow_down=slow,
-                should_ask_follow_up=action not in {"pause", "change_topic"},
-            ),
-            recommended_action=RecommendedAction(action_type=action),
+    def _from_result(message_id: str, raw: dict[str, object]) -> EmotionAnalysisOutput:
+        if raw.get("parse_error"):
+            return EmotionService._fallback_emotion(message_id, str(raw.get("raw_output", "")))
+        raw["message_id"] = message_id
+        raw["primary_emotion"] = EmotionService._normalize(
+            str(raw.get("primary_emotion") or raw.get("emotion") or "engagement"),
+            {
+                "joy",
+                "engagement",
+                "nostalgia",
+                "anxiety",
+                "frustration",
+                "apathy",
+                "defensive",
+                "sadness",
+            },
+            "engagement",
         )
+        raw["risk_level"] = EmotionService._normalize(
+            str(raw.get("risk_level") or raw.get("risk") or "low"),
+            {"low", "medium", "high"},
+            "low",
+        )
+        raw["engagement_level"] = EmotionService._normalize(
+            str(raw.get("engagement_level") or raw.get("engagement") or "medium"),
+            {"low", "medium", "high"},
+            "medium",
+        )
+        try:
+            return EmotionAnalysisOutput.model_validate(raw)
+        except ValidationError:
+            emotion = str(raw.get("primary_emotion") or "engagement")
+            risk = str(raw.get("risk_level") or "low")
+            engagement = str(raw.get("engagement_level") or "medium")
+            action = str(raw.get("action") or raw.get("recommended_action") or "normal_follow_up")
+            slow = bool(raw.get("slow", False))
+            boundary = bool(raw.get("boundary", False))
+            return EmotionAnalysisOutput(
+                message_id=message_id,
+                primary_emotion=emotion,
+                confidence=0.55,
+                risk_level=risk,
+                engagement_level=engagement,
+                boundary_signal=BoundarySignal(
+                    has_refusal=boundary,
+                    has_privacy_concern=boundary,
+                ),
+                conversation_signal=ConversationSignal(
+                    input_intent="continue_story",
+                    answer_quality="has_fact",
+                    should_slow_down=slow,
+                    should_ask_follow_up=action not in {"pause", "change_topic"},
+                ),
+                recommended_action=RecommendedAction(action_type=action),
+            )
+
+    @staticmethod
+    def _normalize(value: str, allowed: set[str], fallback: str) -> str:
+        normalized = value.strip().lower()
+        aliases = {
+            "neutral": "engagement",
+            "calm": "engagement",
+            "positive": "joy",
+            "negative": "anxiety",
+            "refusal": "defensive",
+            "privacy": "defensive",
+        }
+        normalized = aliases.get(normalized, normalized)
+        return normalized if normalized in allowed else fallback
 
 
 emotion_service = EmotionService()

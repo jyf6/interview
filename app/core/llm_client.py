@@ -1,5 +1,7 @@
 import json
 import logging
+import re
+from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -10,8 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    _instances: dict[str, "LLMClient"] = {}
-
     def __init__(self, model: str | None = None, extra_body: dict[str, object] | None = None):
         self._model = model or settings.dashscope_model
         self._extra_body = extra_body
@@ -27,9 +27,10 @@ class LLMClient:
             self._llms[cache_key] = ChatOpenAI(
                 model=self._model,
                 api_key=settings.dashscope_api_key,
-                base_url=settings.dashscope_base_url,
+                base_url=settings.dashscope_base_url.rstrip("/"),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=settings.dashscope_timeout_seconds,
                 extra_body=self._extra_body,
             )
         return self._llms[cache_key]
@@ -61,7 +62,7 @@ class LLMClient:
         *,
         temperature: float = 0.7,
         max_tokens: int = 1024,
-    ) -> dict:
+    ) -> dict[str, Any]:
         raw = self.chat(
             system_prompt,
             user_prompt,
@@ -71,20 +72,28 @@ class LLMClient:
         return self._parse_json(raw)
 
     @staticmethod
-    def _parse_json(raw: str) -> dict:
+    def _parse_json(raw: str) -> dict[str, Any]:
         text = raw.strip()
         if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
-            text = text.replace("```json", "").replace("```", "").strip()
+            text = re.sub(r"^```(?:json)?", "", text, flags=re.I).strip()
+            text = re.sub(r"```$", "", text).strip()
         try:
             return json.loads(text)
         except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.S)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    pass
             logger.warning("LLM JSON 解析失败，返回原文: %s", text[:200])
             return {"raw_output": text, "parse_error": True}
 
 
-interview_llm = LLMClient(model=settings.dashscope_interview_model)
+interview_llm = LLMClient(
+    model=settings.dashscope_interview_model,
+    extra_body={"enable_thinking": False},
+)
 emotion_llm = LLMClient(
     model=settings.dashscope_emotion_model,
     extra_body={"enable_thinking": False},

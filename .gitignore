@@ -1,13 +1,8 @@
 # Python
 __pycache__/
 *.py[cod]
-<<<<<<< HEAD
 *.pyo
 *.pyd
-=======
-*.log
-.env
->>>>>>> 98bc0ed (feat: 整合demo采访端情绪分析模块，重构LLM客户端，新增情绪服务，Redis分层设计)
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -50,10 +45,6 @@ build/
 frontend/node_modules/
 frontend/dist/
 frontend/.npm-cache/
-<<<<<<< HEAD
 
-# Demo
-demo/
-=======
-demo/
->>>>>>> 98bc0ed (feat: 整合demo采访端情绪分析模块，重构LLM客户端，新增情绪服务，Redis分层设计)
+# Legacy demo artifacts
+demo/venv/

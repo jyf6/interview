@@ -3,6 +3,7 @@ import json
 from urllib import error, request
 
 from app.core.config import settings
+from app.prompts.loader import load_prompt
 from app.schemas.agent import AgentMessageRead
 
 
@@ -22,9 +23,9 @@ class DashScopeChatService:
         return await asyncio.to_thread(self._request_completion, payload)
 
     def _build_messages(self, messages: list[AgentMessageRead], goal: str) -> list[dict[str, str]]:
-        system_prompt = settings.dashscope_system_prompt
+        system_prompt = load_prompt(settings.general_chat_prompt_file)
         if goal:
-            system_prompt = f"{system_prompt}\n\nCurrent session goal: {goal}"
+            system_prompt = f"{system_prompt}\n\n当前会话目标：{goal}"
 
         chat_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
         for message in messages:

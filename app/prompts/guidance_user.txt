@@ -1,0 +1,22 @@
+用户选择卡片：{selected_card}
+用户画像：{user_profile}
+最近会话状态：{session_context}
+可用卡片配置：{card_config}
+
+输出 JSON Schema：
+{{
+  "selected_card_id": "{card_id}",
+  "response_strategy": "comfort | explain_process | provide_structure | quick_start | slow_start",
+  "assistant_message": "对用户的安抚或解释，不超过 60 个中文字",
+  "next_question": "低门槛下一问",
+  "next_cards": [
+    {{
+      "card_id": "start_interview | need_guidance",
+      "label": "卡片文案",
+      "next_action": "ENTER_INTERVIEW | SHOW_GUIDANCE_CARD"
+    }}
+  ],
+  "can_enter_interview": true,
+  "recommended_next_state": "GUIDANCE_CARD | READY_TO_INTERVIEW"
+}}
+
