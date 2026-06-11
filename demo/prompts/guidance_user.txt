@@ -9,8 +9,5 @@
   "response_strategy": "comfort | explain_process | provide_structure | quick_start | slow_start",
   "assistant_message": "对用户的安抚或解释",
   "next_question": "低门槛下一问",
-  "next_cards": [],
-  "can_enter_interview": true,
-  "recommended_next_state": "GUIDANCE_CARD | READY_TO_INTERVIEW"
+  "can_enter_interview": true
 }}
-

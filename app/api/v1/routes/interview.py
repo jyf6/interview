@@ -8,8 +8,11 @@ from app.schemas.interview import (
     EntryCardSelection,
     GuidanceCardResponse,
     GuidanceCardSelection,
+    InterviewStateResponse,
     OnboardingGuideResponse,
     StartInterviewResponse,
+    UserInfoRequest,
+    UserInfoResponse,
 )
 from app.services.interview_state_machine import InterviewStateMachine
 from app.services.onboarding_service import OnboardingService
@@ -55,12 +58,37 @@ async def select_guidance_card(
     return await machine.select_guidance_card(payload)
 
 
+@router.get("/interview/state/{session_id}", response_model=InterviewStateResponse)
+async def get_interview_state(
+    session_id: str,
+    machine: InterviewStateMachine = Depends(get_interview_machine),
+) -> InterviewStateResponse:
+    return await machine.get_state(session_id)
+
+
+@router.get("/interview/users/{user_id}/userinfo", response_model=UserInfoResponse)
+async def get_interview_userinfo(
+    user_id: str,
+    machine: InterviewStateMachine = Depends(get_interview_machine),
+) -> UserInfoResponse:
+    return await machine.get_userinfo(user_id)
+
+
+@router.put("/interview/users/{user_id}/userinfo", response_model=UserInfoResponse)
+async def save_interview_userinfo(
+    user_id: str,
+    payload: UserInfoRequest,
+    machine: InterviewStateMachine = Depends(get_interview_machine),
+) -> UserInfoResponse:
+    return await machine.save_userinfo(user_id, payload)
+
+
 @router.post("/interview/dialog/start", response_model=DialogTurnResponse)
 async def start_dialog_flow(
     payload: DialogStartRequest,
     machine: InterviewStateMachine = Depends(get_interview_machine),
 ) -> DialogTurnResponse:
-    return await machine.start_dialog(payload.session_id)
+    return await machine.start_dialog(payload.session_id, payload.user_id)
 
 
 @router.post("/interview/dialog/actions", response_model=DialogTurnResponse)

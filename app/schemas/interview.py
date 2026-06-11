@@ -99,6 +99,7 @@ GuidanceCardId = Literal[
     "want_example_first",
     "need_guidance",
     "need_more_guidance",
+    "custom_question",
 ]
 DialogCardId = Literal[
     "start_interview",
@@ -115,6 +116,7 @@ DialogCardId = Literal[
     "dont_know_start_point",
     "worry_not_good_at_talking",
     "want_example_first",
+    "custom_question",
 ]
 DialogAction = Literal[
     "append_message",
@@ -139,11 +141,10 @@ class DialogMessage(BaseModel):
 
 class InterviewContext(BaseModel):
     session_id: str
-    current_state: InterviewState = "INIT"
+    state: str = "INIT"
     previous_state: InterviewState | None = None
     guidance_round: int = 0
     max_guidance_rounds: int = 3
-    dialog_messages: list[dict[str, str]] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -182,11 +183,13 @@ class GuidanceCardResponse(BaseModel):
 
 class DialogStartRequest(BaseModel):
     session_id: str | None = None
+    user_id: str | None = None
 
 
 class DialogActionRequest(BaseModel):
     session_id: str | None = None
     card_id: DialogCardId
+    question: str | None = None
 
 
 class DialogTextRequest(BaseModel):
@@ -206,6 +209,23 @@ class DialogTurnResponse(BaseModel):
     max_guidance_rounds: int
     can_continue_guidance: bool
     response_source: ResponseSource = "none"
+
+
+class InterviewStateResponse(BaseModel):
+    session_id: str
+    state: InterviewState
+
+
+class UserInfoRequest(BaseModel):
+    name: str = ""
+    gender: str = ""
+    age: str = ""
+    last_used_at: str = ""
+
+
+class UserInfoResponse(BaseModel):
+    user_id: str
+    userinfo: dict[str, str] = Field(default_factory=dict)
 
 
 class OnboardingStep(BaseModel):

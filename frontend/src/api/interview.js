@@ -17,10 +17,10 @@ async function request(path, options = {}) {
   return response.json()
 }
 
-export function startDialog(sessionId = null) {
+export function startDialog(sessionId = null, userId = '') {
   return request('/interview/dialog/start', {
     method: 'POST',
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ session_id: sessionId, user_id: userId }),
   })
 }
 
@@ -34,6 +34,21 @@ export function sendDialogAction(payload) {
 export function sendDialogText(payload) {
   return request('/interview/dialog/text', {
     method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getInterviewState(sessionId) {
+  return request(`/interview/state/${sessionId}`)
+}
+
+export function getUserInfo(userId) {
+  return request(`/interview/users/${userId}/userinfo`)
+}
+
+export function saveUserInfo(userId, payload) {
+  return request(`/interview/users/${userId}/userinfo`, {
+    method: 'PUT',
     body: JSON.stringify(payload),
   })
 }

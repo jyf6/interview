@@ -34,6 +34,10 @@ GUIDANCE_CARDS = [
         "card_id": "scattered",
         "label": "我思绪有点乱，不知道从哪里说起",
     },
+    {
+        "card_id": "custom_question",
+        "label": "我想自己提一个问题",
+    },
 ]
 
 CARD_RESPONSE_CORPUS = {
@@ -132,6 +136,7 @@ CARD_RESPONSE_CORPUS = {
 
 CARD_ID_ALIASES = {
     "need_more_guidance": "need_guidance",
+    "custom_question": "custom_question",
     "dont_know_process": "unknown_process",
     "dont_know_start_point": "scattered",
     "worry_not_good_at_talking": "restrained",
