@@ -55,11 +55,6 @@ const stateSteps = [
 
 const interviewStages = [
   {
-    id: 'S0',
-    title: '开场破冰',
-    description: '先用简单、轻松的问题拉近距离，让受访者从容易想起的小事开始说。',
-  },
-  {
     id: 'S1',
     title: '童年时光',
     description: '围绕出生环境、家人、玩伴、童年小事和儿时心愿慢慢展开。',
@@ -102,11 +97,13 @@ const interviewRemainingText = computed(() => {
   const value = interviewState.value?.remaining_rounds
   return Number.isFinite(Number(value)) ? String(value) : '-'
 })
+const interviewAwaitingStageCompletion = computed(() => String(interviewState.value?.awaiting_stage_completion ?? 0) === '1')
 const interviewCompletedText = computed(() => String(interviewState.value?.completed ?? 0) === '1' ? '已完成' : '进行中')
 const interviewStageStatusText = computed(() => {
   if (interviewCompletedText.value === '已完成') return '已完成'
   if (!activeInterviewStage.value) return '待开始'
-  return `${interviewStageText.value} · 剩余 ${interviewRemainingText.value} 轮`
+  if (interviewAwaitingStageCompletion.value) return `${interviewStageText.value} · 等待本阶段最后回答`
+  return `${interviewStageText.value} · 剩余 ${interviewRemainingText.value} 个主问题`
 })
 const canType = computed(() => currentState.value === 'READY_TO_INTERVIEW' || currentState.value === 'INTERVIEWING')
 const cardsTitle = computed(() => {
@@ -552,7 +549,7 @@ onBeforeUnmount(() => {
               <strong>{{ interviewStageTitle }}</strong>
             </div>
             <p>{{ interviewStageDescription }}</p>
-            <small>{{ interviewCompletedText }} · 剩余 {{ interviewRemainingText }} 轮</small>
+            <small>{{ interviewCompletedText }} · {{ interviewStageStatusText }}</small>
           </div>
 
           <ol class="state-timeline">
