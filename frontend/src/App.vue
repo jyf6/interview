@@ -20,6 +20,7 @@ const cardGroup = ref('none')
 const responseSource = ref('none')
 const guidanceRound = ref(0)
 const maxGuidanceRounds = ref(3)
+const interviewState = ref({})
 const cards = ref([])
 const messages = ref([])
 const inputText = ref('')
@@ -49,12 +50,64 @@ const stateSteps = [
   { value: 'GUIDANCE_CARD', label: '引导卡片' },
   { value: 'READY_TO_INTERVIEW', label: '准备采访' },
   { value: 'INTERVIEWING', label: '采访中' },
+  { value: 'end', label: '采访结束' },
+]
+
+const interviewStages = [
+  {
+    id: 'S0',
+    title: '开场破冰',
+    description: '先用简单、轻松的问题拉近距离，让受访者从容易想起的小事开始说。',
+  },
+  {
+    id: 'S1',
+    title: '童年时光',
+    description: '围绕出生环境、家人、玩伴、童年小事和儿时心愿慢慢展开。',
+  },
+  {
+    id: 'S2',
+    title: '青春岁月',
+    description: '聊求学、离家、初入社会、朋友陪伴、理想和年少打拼。',
+  },
+  {
+    id: 'S3',
+    title: '人生转折',
+    description: '进入成家、择业、重大选择、责任、困境和低谷等关键经历。',
+  },
+  {
+    id: 'S4',
+    title: '岁月阅历',
+    description: '回看半生感悟、当下生活、心态变化和日常里的小幸福。',
+  },
+  {
+    id: 'S5',
+    title: '收尾总结',
+    description: '逐步收束采访，聊遗憾、释怀、人生总结和想留下的话。',
+  },
 ]
 
 const stateText = computed(() => currentState.value || 'INIT')
 const stateLabel = computed(() => stateSteps.find((item) => item.value === stateText.value)?.label ?? stateText.value)
 const currentStateIndex = computed(() => stateSteps.findIndex((item) => item.value === stateText.value))
 const roundText = computed(() => `${guidanceRound.value}/${maxGuidanceRounds.value}`)
+const interviewStageText = computed(() => interviewState.value?.stage_id ?? '-')
+const activeInterviewStage = computed(() => {
+  return interviewStages.find((item) => item.id === interviewStageText.value) ?? null
+})
+const interviewStageTitle = computed(() => activeInterviewStage.value?.title ?? '未进入采访阶段')
+const interviewStageDescription = computed(() => {
+  return activeInterviewStage.value?.description ?? '开始采访后，这里会显示当前所处阶段和采访节奏。'
+})
+const interviewRemainingText = computed(() => {
+  const value = interviewState.value?.remaining_rounds
+  return Number.isFinite(Number(value)) ? String(value) : '-'
+})
+const interviewCompletedText = computed(() => String(interviewState.value?.completed ?? 0) === '1' ? '已完成' : '进行中')
+const interviewStageStatusText = computed(() => {
+  if (interviewCompletedText.value === '已完成') return '已完成'
+  if (!activeInterviewStage.value) return '待开始'
+  return `${interviewStageText.value} · 剩余 ${interviewRemainingText.value} 轮`
+})
 const canType = computed(() => currentState.value === 'READY_TO_INTERVIEW' || currentState.value === 'INTERVIEWING')
 const cardsTitle = computed(() => {
   if (cardGroup.value === 'guidance') return '选择一个最接近的感受'
@@ -126,6 +179,7 @@ function applyTurn(data) {
   responseSource.value = data.response_source
   guidanceRound.value = data.guidance_round
   maxGuidanceRounds.value = data.max_guidance_rounds
+  interviewState.value = data.state_interview || interviewState.value || {}
   cards.value = data.cards || []
 
   if (data.message?.content) {
@@ -187,6 +241,7 @@ async function resetDialog() {
     previousState.value = ''
     cardGroup.value = 'none'
     responseSource.value = 'none'
+    interviewState.value = {}
     guidanceRound.value = 0
     maxGuidanceRounds.value = 3
     cards.value = []
@@ -257,6 +312,7 @@ async function refreshState() {
     statePolling.value = true
     const data = await getInterviewState(sessionId.value)
     currentState.value = data.state || currentState.value
+    interviewState.value = data.state_interview || interviewState.value || {}
   } catch (err) {
     console.warn('Failed to refresh interview state', err)
   } finally {
@@ -396,12 +452,21 @@ onBeforeUnmount(() => {
           </button>
         </header>
 
-        <div class="debug-strip">
-          <span>用户ID：{{ userId || '-' }}</span>
-          <span>状态：{{ stateLabel }}</span>
-          <span>上一步：{{ previousState || '-' }}</span>
-          <span>来源：{{ responseSource }}</span>
-        </div>
+        <section class="interview-stage-banner" aria-label="当前采访状态">
+          <div class="stage-main">
+            <span class="stage-code">{{ interviewStageText }}</span>
+            <div>
+              <p class="eyebrow">当前采访状态</p>
+              <h2>{{ interviewStageTitle }}</h2>
+            </div>
+          </div>
+          <p>{{ interviewStageDescription }}</p>
+          <div class="stage-meta">
+            <span>{{ interviewStageStatusText }}</span>
+            <span>流程状态：{{ stateLabel }}</span>
+            <span>来源：{{ responseSource }}</span>
+          </div>
+        </section>
 
         <div v-if="error" class="error-box">
           {{ error }}
@@ -479,6 +544,15 @@ onBeforeUnmount(() => {
             <strong>{{ stateLabel }}</strong>
             <small>Session：{{ sessionId || '-' }}</small>
             <small>User ID：{{ userId || '-' }}</small>
+          </div>
+
+          <div class="stage-summary">
+            <div>
+              <span class="stage-code">{{ interviewStageText }}</span>
+              <strong>{{ interviewStageTitle }}</strong>
+            </div>
+            <p>{{ interviewStageDescription }}</p>
+            <small>{{ interviewCompletedText }} · 剩余 {{ interviewRemainingText }} 轮</small>
           </div>
 
           <ol class="state-timeline">

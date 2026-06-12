@@ -3,9 +3,6 @@ import logging
 import re
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -15,13 +12,15 @@ class LLMClient:
     def __init__(self, model: str | None = None, extra_body: dict[str, object] | None = None):
         self._model = model or settings.dashscope_model
         self._extra_body = extra_body
-        self._llms: dict[tuple[float, int], ChatOpenAI] = {}
+        self._llms: dict[tuple[float, int], Any] = {}
 
     @property
     def model(self) -> str:
         return self._model
 
-    def get_llm(self, *, temperature: float = 0.7, max_tokens: int = 1024) -> ChatOpenAI:
+    def get_llm(self, *, temperature: float = 0.7, max_tokens: int = 1024) -> Any:
+        from langchain_openai import ChatOpenAI
+
         cache_key = (temperature, max_tokens)
         if cache_key not in self._llms:
             self._llms[cache_key] = ChatOpenAI(
@@ -36,7 +35,7 @@ class LLMClient:
         return self._llms[cache_key]
 
     @property
-    def llm(self) -> ChatOpenAI:
+    def llm(self) -> Any:
         return self.get_llm()
 
     def chat(
@@ -47,6 +46,8 @@ class LLMClient:
         temperature: float = 0.7,
         max_tokens: int = 1024,
     ) -> str:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),
@@ -92,9 +93,5 @@ class LLMClient:
 
 interview_llm = LLMClient(
     model=settings.dashscope_interview_model,
-    extra_body={"enable_thinking": False},
-)
-emotion_llm = LLMClient(
-    model=settings.dashscope_emotion_model,
     extra_body={"enable_thinking": False},
 )

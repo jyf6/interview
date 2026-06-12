@@ -5,9 +5,6 @@ import logging
 import re
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from config.app_config import app_config
 
 logger = logging.getLogger(__name__)
@@ -17,10 +14,12 @@ class LLMClient:
     """Small OpenAI-compatible wrapper around DashScope chat models."""
 
     def __init__(self):
-        self._llm: ChatOpenAI | None = None
+        self._llm: Any | None = None
 
     @property
-    def llm(self) -> ChatOpenAI:
+    def llm(self) -> Any:
+        from langchain_openai import ChatOpenAI
+
         if self._llm is None:
             self._llm = ChatOpenAI(
                 model=app_config.dashscope_model,
@@ -34,6 +33,8 @@ class LLMClient:
         return self._llm
 
     def chat(self, system_prompt: str, user_prompt: str) -> str:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),
@@ -47,6 +48,8 @@ class LLMClient:
         return self._parse_json(raw)
 
     def chat_stream(self, system_prompt: str, user_prompt: str):
+        from langchain_core.messages import HumanMessage, SystemMessage
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),

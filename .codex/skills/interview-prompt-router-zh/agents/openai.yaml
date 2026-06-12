@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "采访提示词路由器"
+  short_description: "判断采访应继续提问还是先安抚，并生成下一句回复"
+  default_prompt: "使用 $interview-prompt-router-zh 判断采访路线并生成下一句用户可见回复。"

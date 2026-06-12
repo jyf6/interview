@@ -35,7 +35,6 @@ def generate_opening(session: SessionState) -> SessionResponse:
         "last_state": session.session_context.last_state.value if session.session_context.last_state else None,
         "last_story_summary": session.session_context.last_story_summary,
         "unfinished_slots": session.session_context.unfinished_slots,
-        "last_emotion": session.session_context.last_emotion,
         "days_since_last_visit": session.session_context.days_since_last_visit,
     }, ensure_ascii=False)
 

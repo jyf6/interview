@@ -2,11 +2,12 @@ import asyncio
 import json
 import random
 from datetime import UTC, datetime
-from typing import cast, get_args
+from typing import Any, cast, get_args
 from uuid import uuid4
 
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError as RedisResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.config import settings
@@ -34,6 +35,63 @@ from app.services.opening_service import OpeningService
 
 VALID_INTERVIEW_STATES = set(get_args(InterviewState))
 MAX_GUIDANCE_ROUNDS = 3
+INTERVIEW_STAGES = [
+    {
+        "id": "S0",
+        "rounds": 1,
+        "description": "S0 开场破冰：只做低压力暖场，像唠家常一样先让受访者放松。优先用简单选择式问题或轻问句开启，例如先想到家乡的一处地方、一位熟人、小时候常做的一件小事，或今天最容易想起的一段日子。不要追问沉重细节、重大转折、遗憾和人生总结。若用户已经回答了破冰问题，本轮要简短承接，并自然转入 S1 童年时光。",
+    },
+    {
+        "id": "S1",
+        "rounds": 4,
+        "description": "S1 童年时光：用4轮全景框架还原童年。重点覆盖童年成长环境与家庭处境、日常生活节奏与最难忘事件、家人玩伴等人际陪伴、童年带来的性格影响或心底感触。避免追问玩具、食物、天气等无助于传记全貌的碎片细节，也避免过早进入成年事业、婚姻和晚年总结。",
+    },
+    {
+        "id": "S2",
+        "rounds": 4,
+        "description": "S2 青春岁月：用4轮全景框架还原青春阶段。重点覆盖求学、离家或初入社会时的环境处境，日常学习工作与关键事件，朋友同伴或师长的陪伴扶持，以及这段经历带来的成长、理想变化和得失。避免追问无关琐碎细节，也避免过早进入中年责任和晚年总结。",
+    },
+    {
+        "id": "S3",
+        "rounds": 4,
+        "description": "S3 人生转折：用4轮全景框架还原成家、择业、重大选择、责任、困境和低谷。重点覆盖当时处境和压力来源，日常责任与关键转折事件，家人伙伴同事的支持或分担，以及这段转折带来的改变、收获和遗憾。追问要温和，遇到回避或沉重内容及时转向支撑、温暖和后来变化，不深挖痛苦细节。",
+    },
+    {
+        "id": "S4",
+        "rounds": 4,
+        "description": "S4 岁月阅历：用4轮全景框架还原走到当下后的生活状态。重点覆盖当前生活环境和处境，日常节奏与代表性事件，家人老友邻里等陪伴关系，以及心态变化、珍惜之物和生活感悟。问题应更平和、收拢，不再开启过大的新事件。",
+    },
+    {
+        "id": "S5",
+        "rounds": 4,
+        "description": "S5 收尾总结：用4轮全景框架完成全篇收束。重点覆盖回望整个人生的整体处境与主线，最重要的经历或转折，最想感谢或牵挂的人，以及最终的人生总结、释怀、遗憾和想留给家人的话。逐步结束采访，最后表达感谢，不再开启新的阶段性故事。",
+    },
+]
+INTERVIEW_STAGE_BY_ID = {stage["id"]: stage for stage in INTERVIEW_STAGES}
+FIRST_INTERVIEW_STAGE = INTERVIEW_STAGES[0]["id"]
+LAST_INTERVIEW_STAGE = INTERVIEW_STAGES[-1]["id"]
+STAGE_TASK_BY_REMAINING_ROUNDS = {
+    4: (
+        "本轮采访任务：日常主线与关键事件。用户刚回答了本阶段的环境与处境，"
+        "下一问要覆盖这段时期每天主要做什么，以及最有代表性的一件大事、转折、高光或困难。"
+    ),
+    3: (
+        "本轮采访任务：人际联结。用户刚回答了日常主线或关键事件，"
+        "下一问要覆盖这段时期身边陪伴、共事、扶持的人，不要追问无关细节。"
+    ),
+    2: (
+        "本轮采访任务：心境得失。用户刚回答了人际联结，"
+        "下一问要覆盖这段时光带来的改变、收获、遗憾或整体心境。"
+    ),
+    1: (
+        "本轮采访任务：阶段收束与下一阶段开启。用户刚回答了心境得失，"
+        "下一句要简短收束当前阶段，并自然开启下一阶段的环境与处境问题。"
+    ),
+}
+FINAL_STAGE_TASK = (
+    "本轮采访任务：最终收尾。用户刚回答了人生总结或心境得失，"
+    "下一句要温情感谢并结束采访，不要再提出新的问题。"
+)
 GUIDANCE_LIMIT_MESSAGES = [
     "不用有任何担心和顾虑哦。整个采访过程轻松自由，没有复杂规则，如果你对流程有任何不明白的地方，随时都可以问我。一切都按照你的节奏进行，你可以安心放心地点击开启采访，我们慢慢聊就好。",
     "我能理解你对未知流程的小忐忑，其实完全不用紧张。全程都是轻松聊天，有任何疑问、不清楚的地方都可以随时提问。你可以放心大胆开启采访，不用拘谨，随心分享就足够啦。",
@@ -84,6 +142,7 @@ class InterviewStateMachine:
             max_guidance_rounds=MAX_GUIDANCE_ROUNDS,
             can_continue_guidance=guidance_round < MAX_GUIDANCE_ROUNDS,
             response_source="none",
+            state_interview=await self._get_or_create_interview_progress(context.session_id),
         )
 
     async def handle_dialog_action(self, payload: DialogActionRequest) -> DialogTurnResponse:
@@ -101,6 +160,22 @@ class InterviewStateMachine:
     async def handle_dialog_text(self, payload: DialogTextRequest) -> DialogTurnResponse:
         with perf_span("dialog.text.total", has_session=bool(payload.session_id), chars=len(payload.content)):
             context = await self._get_or_create_context(payload.session_id)
+            if context.state == "end":
+                progress = await self._get_or_create_interview_progress(context.session_id)
+                return DialogTurnResponse(
+                    session_id=context.session_id,
+                    current_state=self._current_state(context),
+                    previous_state=context.previous_state,
+                    action="append_message",
+                    message=DialogMessage(content="采：这次采访已经完成了，感谢您分享这些珍贵的人生故事。"),
+                    cards=[],
+                    card_group="none",
+                    guidance_round=context.guidance_round,
+                    max_guidance_rounds=context.max_guidance_rounds,
+                    can_continue_guidance=False,
+                    response_source="none",
+                    state_interview=progress,
+                )
             if context.state == "READY_TO_INTERVIEW":
                 await self._transition(context, "INTERVIEWING")
             elif context.state != "INTERVIEWING":
@@ -108,10 +183,23 @@ class InterviewStateMachine:
                 await self._transition(context, "INTERVIEWING")
 
             user_content = payload.content.strip()
+            progress = await self._get_or_create_interview_progress(context.session_id)
+            history = await self._get_messages(context.session_id)
+            await self._append_message(context.session_id, "user", user_content)
+            stage_description = self._stage_description(progress)
 
-            assistant_content, _emotion = await self.interview_agent.generate_turn(
+            turn = await self.interview_agent.generate_turn(
                 user_message=user_content,
-                recent_messages=[],
+                recent_messages=history,
+                stage_description=stage_description,
+                remaining_rounds=progress["remaining_rounds"],
+            )
+            assistant_content = turn.reply
+            await self._append_message(context.session_id, "assistant", assistant_content)
+            progress = await self._advance_interview_progress(
+                context,
+                progress,
+                round_decrement=turn.route.round_decrement,
             )
             context.updated_at = datetime.now(UTC)
 
@@ -126,7 +214,8 @@ class InterviewStateMachine:
             guidance_round=context.guidance_round,
             max_guidance_rounds=context.max_guidance_rounds,
             can_continue_guidance=False,
-            response_source="llm" if settings.dashscope_api_key else "fallback",
+            response_source=turn.response_source,
+            state_interview=progress,
         )
 
     async def select_entry_card(self, payload: EntryCardSelection) -> StartInterviewResponse:
@@ -164,6 +253,7 @@ class InterviewStateMachine:
         return InterviewStateResponse(
             session_id=context.session_id,
             state=self._current_state(context),
+            state_interview=await self._get_or_create_interview_progress(context.session_id),
         )
 
     async def get_userinfo(self, user_id: str) -> UserInfoResponse:
@@ -185,8 +275,15 @@ class InterviewStateMachine:
         )
 
     async def _ready_to_interview(self, context: InterviewContext) -> DialogTurnResponse:
-        message = "好的，我们准备开始采访。您可以从一个人、一个地方，或一件小事慢慢说起。"
         await self._transition(context, "READY_TO_INTERVIEW")
+        await self._reset_interview_progress(context.session_id)
+        progress = await self._get_or_create_interview_progress(context.session_id)
+        icebreaker = await self.interview_agent.generate_icebreaker(
+            recent_messages=await self._get_messages(context.session_id),
+            stage_description=self._stage_description(progress),
+        )
+        message = icebreaker.reply
+        await self._append_message(context.session_id, "assistant", message)
         guidance_round = await self._get_guidance_round(context.session_id)
         return DialogTurnResponse(
             session_id=context.session_id,
@@ -199,7 +296,8 @@ class InterviewStateMachine:
             guidance_round=guidance_round,
             max_guidance_rounds=MAX_GUIDANCE_ROUNDS,
             can_continue_guidance=False,
-            response_source="none",
+            response_source=icebreaker.response_source,
+            state_interview=progress,
         )
 
     async def _show_guidance_cards(self, context: InterviewContext) -> DialogTurnResponse:
@@ -324,12 +422,17 @@ class InterviewStateMachine:
         return context
 
     async def _save_state(self, context: InterviewContext) -> None:
-        await self._redis_set(self._key(context.session_id), context.state)
+        await self._overwrite_state_value(self._key(context.session_id), context.state)
 
     async def _redis_get(self, key: str) -> str | None:
         for attempt in range(2):
             try:
                 return await self.redis.get(key)
+            except RedisResponseError as exc:
+                if "WRONGTYPE" not in str(exc):
+                    raise
+                await self._redis_delete(key)
+                return None
             except (RedisConnectionError, RedisTimeoutError):
                 if attempt == 1:
                     raise
@@ -361,11 +464,46 @@ class InterviewStateMachine:
         for attempt in range(2):
             try:
                 return await self.redis.hgetall(key)
+            except RedisResponseError as exc:
+                if "WRONGTYPE" not in str(exc):
+                    raise
+                await self._redis_delete(key)
+                return {}
             except (RedisConnectionError, RedisTimeoutError):
                 if attempt == 1:
                     raise
                 await asyncio.sleep(0.08)
         return {}
+
+    async def _redis_rpush(self, key: str, value: str) -> None:
+        for attempt in range(2):
+            try:
+                await self.redis.rpush(key, value)
+                await self.redis.expire(key, settings.session_ttl_seconds)
+                return
+            except (RedisConnectionError, RedisTimeoutError):
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.08)
+
+    async def _overwrite_state_value(self, key: str, value: str) -> None:
+        """State-machine keys are scalar snapshots, never append-only history."""
+        await self._redis_set(key, value)
+
+    async def _redis_lrange(self, key: str, start: int, end: int) -> list[str]:
+        for attempt in range(2):
+            try:
+                return await self.redis.lrange(key, start, end)
+            except RedisResponseError as exc:
+                if "WRONGTYPE" not in str(exc):
+                    raise
+                await self._redis_delete(key)
+                return []
+            except (RedisConnectionError, RedisTimeoutError):
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.08)
+        return []
 
     async def _redis_delete(self, key: str) -> None:
         for attempt in range(2):
@@ -387,7 +525,138 @@ class InterviewStateMachine:
             return 0
 
     async def _set_guidance_round(self, session_id: str, value: int) -> None:
-        await self._redis_set(self._guidance_round_key(session_id), str(value))
+        await self._overwrite_state_value(self._guidance_round_key(session_id), str(value))
+
+    async def _reset_interview_progress(self, session_id: str) -> None:
+        await self._redis_delete(self._interview_progress_key(session_id))
+        await self._redis_delete(self._messages_key(session_id))
+        await self._set_interview_progress(
+            session_id,
+            {
+                "stage_id": FIRST_INTERVIEW_STAGE,
+                "remaining_rounds": int(INTERVIEW_STAGE_BY_ID[FIRST_INTERVIEW_STAGE]["rounds"]),
+                "completed": 0,
+            },
+        )
+
+    async def _get_or_create_interview_progress(self, session_id: str) -> dict[str, Any]:
+        raw = await self._redis_get(self._interview_progress_key(session_id))
+        if not raw:
+            progress = {
+                "stage_id": FIRST_INTERVIEW_STAGE,
+                "remaining_rounds": int(INTERVIEW_STAGE_BY_ID[FIRST_INTERVIEW_STAGE]["rounds"]),
+                "completed": 0,
+            }
+            await self._set_interview_progress(session_id, progress)
+            return progress
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = {}
+
+        stage_id = data.get("stage_id") if data.get("stage_id") in INTERVIEW_STAGE_BY_ID else FIRST_INTERVIEW_STAGE
+        try:
+            remaining_rounds = max(0, int(data.get("remaining_rounds", 0)))
+        except (TypeError, ValueError):
+            remaining_rounds = int(INTERVIEW_STAGE_BY_ID[stage_id]["rounds"])
+        completed = 1 if str(data.get("completed")) == "1" else 0
+        return {"stage_id": stage_id, "remaining_rounds": remaining_rounds, "completed": completed}
+
+    async def _set_interview_progress(self, session_id: str, progress: dict[str, Any]) -> None:
+        await self._overwrite_state_value(
+            self._interview_progress_key(session_id),
+            json.dumps(
+                {
+                    "stage_id": str(progress["stage_id"]),
+                    "remaining_rounds": int(progress["remaining_rounds"]),
+                    "completed": int(progress.get("completed", 0)),
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    async def _advance_interview_progress(
+        self,
+        context: InterviewContext,
+        progress: dict[str, Any],
+        *,
+        round_decrement: int,
+    ) -> dict[str, Any]:
+        if progress.get("completed"):
+            return progress
+
+        if round_decrement:
+            progress["remaining_rounds"] = max(0, int(progress["remaining_rounds"]) - 1)
+
+        while int(progress["remaining_rounds"]) <= 0 and not progress.get("completed"):
+            stage_id = str(progress["stage_id"])
+            next_stage_id = self._next_stage_id(stage_id)
+            if next_stage_id is None:
+                progress["completed"] = 1
+                progress["remaining_rounds"] = 0
+                await self._set_interview_progress(context.session_id, progress)
+                await self._transition(context, "end")
+                return progress
+            progress["stage_id"] = next_stage_id
+            progress["remaining_rounds"] = int(INTERVIEW_STAGE_BY_ID[next_stage_id]["rounds"])
+
+        await self._set_interview_progress(context.session_id, progress)
+        return progress
+
+    async def _append_message(self, session_id: str, role: str, content: str) -> None:
+        message = {
+            "role": role,
+            "content": content,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        await self._redis_rpush(self._messages_key(session_id), json.dumps(message, ensure_ascii=False))
+
+    async def _get_messages(self, session_id: str) -> list[dict[str, str]]:
+        raw_messages = await self._redis_lrange(self._messages_key(session_id), 0, -1)
+        messages: list[dict[str, str]] = []
+        for item in raw_messages:
+            try:
+                data = json.loads(item)
+            except json.JSONDecodeError:
+                continue
+            role = data.get("role")
+            content = data.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                messages.append({"role": role, "content": content})
+        return messages
+
+    @staticmethod
+    def _stage_description(progress: dict[str, Any]) -> str:
+        stage_id = str(progress["stage_id"])
+        stage = INTERVIEW_STAGE_BY_ID.get(stage_id, INTERVIEW_STAGE_BY_ID[FIRST_INTERVIEW_STAGE])
+        remaining_rounds = int(progress["remaining_rounds"])
+        task = InterviewStateMachine._stage_task(stage_id, remaining_rounds)
+        return f"{stage['description']}\n当前阶段建议剩余轮数：{remaining_rounds}\n{task}"
+
+    @staticmethod
+    def _stage_task(stage_id: str, remaining_rounds: int) -> str:
+        if stage_id == "S0":
+            return (
+                "本轮采访任务：S0破冰承接。用户刚回答了最先想起的日子，"
+                "下一句要简短承接，并自然开启 S1 童年时光的环境与处境问题。"
+            )
+        if stage_id == LAST_INTERVIEW_STAGE and remaining_rounds <= 1:
+            return FINAL_STAGE_TASK
+        return STAGE_TASK_BY_REMAINING_ROUNDS.get(
+            remaining_rounds,
+            STAGE_TASK_BY_REMAINING_ROUNDS[4],
+        )
+
+    @staticmethod
+    def _next_stage_id(stage_id: str) -> str | None:
+        ids = [stage["id"] for stage in INTERVIEW_STAGES]
+        try:
+            index = ids.index(stage_id)
+        except ValueError:
+            return FIRST_INTERVIEW_STAGE
+        next_index = index + 1
+        return ids[next_index] if next_index < len(ids) else None
 
     async def _transition(self, context: InterviewContext, to_state: InterviewState) -> None:
         if context.state != to_state:
@@ -436,3 +705,11 @@ class InterviewStateMachine:
     @staticmethod
     def _guidance_round_key(session_id: str) -> str:
         return f"interview:guidance_round:{session_id}"
+
+    @staticmethod
+    def _interview_progress_key(session_id: str) -> str:
+        return f"interview:state_interview:{session_id}"
+
+    @staticmethod
+    def _messages_key(session_id: str) -> str:
+        return f"interview:messages:{session_id}"

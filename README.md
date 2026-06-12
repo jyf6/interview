@@ -6,9 +6,8 @@ This version follows the current `jin` branch structure:
 
 - Backend owns the Redis-backed state machine, opening dialog, guidance cards, and formal interview turns.
 - Frontend is only a lightweight test page that adapts to backend dialog endpoints.
-- DashScope is split into two roles: one interview model and one emotion analysis model.
 - Guidance-card generation and formal interview replies share `DASHSCOPE_INTERVIEW_MODEL`.
-- Each formal assistant reply appends the emotion analysis result in parentheses for demo display.
+- Formal interview replies use the Chinese interview-router skill prompts and Redis-backed S0-S5 interview stages.
 
 ## Environment
 
@@ -36,10 +35,9 @@ DASHSCOPE_API_KEY=
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 DASHSCOPE_MODEL=qwen-plus
 DASHSCOPE_INTERVIEW_MODEL=qwen-plus
-DASHSCOPE_EMOTION_MODEL=qwen-turbo
 ```
 
-`DASHSCOPE_INTERVIEW_MODEL` is used by the opening generator, guidance-card generator, and interview agent. `DASHSCOPE_EMOTION_MODEL` is used for per-turn emotion analysis. If no DashScope key is configured, the backend returns local fallback replies so the flow can still be tested.
+`DASHSCOPE_INTERVIEW_MODEL` is used by the opening generator, guidance-card generator, and interview agent. If no DashScope key is configured, the backend returns local fallback replies so the flow can still be tested.
 
 ## Start
 
@@ -92,7 +90,8 @@ Opening message
   -> optional guidance cards
   -> READY_TO_INTERVIEW
   -> INTERVIEWING
-  -> interview reply + emotion display
+  -> S0-S5 interview stages
+  -> end
 ```
 
 Redis state machine states:
@@ -104,6 +103,7 @@ OPENING_DELIVERED
 GUIDANCE_CARD
 READY_TO_INTERVIEW
 INTERVIEWING
+end
 ```
 
 ## Verification
@@ -111,7 +111,7 @@ INTERVIEWING
 Commands used for local verification:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile app\core\config.py app\core\llm_client.py app\prompts\loader.py app\schemas\interview.py app\services\dashscope_llm.py app\services\emotion_service.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\services\llm_service.py app\services\opening_service.py app\api\v1\routes\interview.py app\main.py
+.\.venv\Scripts\python.exe -m py_compile app\core\config.py app\core\llm_client.py app\prompts\loader.py app\schemas\interview.py app\services\dashscope_llm.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\services\llm_service.py app\services\opening_service.py app\api\v1\routes\interview.py app\main.py
 cd frontend
 npm.cmd run build
 docker compose -p interview-agent exec -T redis redis-cli ping

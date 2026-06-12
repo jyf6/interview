@@ -4,78 +4,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class BoundarySignal(BaseModel):
-    has_privacy_concern: bool = False
-    has_refusal: bool = False
-    sensitive_topic: bool = False
-    do_not_probe: list[str] = Field(default_factory=list)
-
-
-class ConversationSignal(BaseModel):
-    input_intent: str = "unclear"
-    answer_quality: str = "short_answer"
-    should_slow_down: bool = False
-    should_ask_follow_up: bool = True
-
-
-class RecommendedAction(BaseModel):
-    action_type: str = "normal_follow_up"
-    reason: str = ""
-    allowed_question_type: list[str] = Field(default_factory=list)
-    forbidden_question_type: list[str] = Field(default_factory=list)
-
-
-class EmotionAnalysisOutput(BaseModel):
-    message_id: str = ""
-    session_id: str = ""
-    primary_emotion: str = "engagement"
-    secondary_emotions: list[str] = Field(default_factory=list)
-    valence: float = 0.0
-    arousal: float = 0.0
-    confidence: float = 0.0
-    risk_level: str = "low"
-    engagement_level: str = "medium"
-    boundary_signal: BoundarySignal = Field(default_factory=BoundarySignal)
-    conversation_signal: ConversationSignal = Field(default_factory=ConversationSignal)
-    recommended_action: RecommendedAction = Field(default_factory=RecommendedAction)
-    storage_ttl_minutes: int = 180
-
-    def to_display_text(self) -> str:
-        emotion_labels = {
-            "joy": "愉悦",
-            "engagement": "投入",
-            "nostalgia": "怀旧",
-            "anxiety": "焦虑/担心",
-            "frustration": "烦躁/沮丧",
-            "apathy": "冷淡/低参与",
-            "defensive": "防御/抗拒",
-            "sadness": "悲伤",
-        }
-        risk_labels = {"low": "低", "medium": "中", "high": "高"}
-        engagement_labels = {"low": "低", "medium": "中", "high": "高"}
-        action_labels = {
-            "normal_follow_up": "正常追问",
-            "soft_follow_up": "柔和追问",
-            "comfort": "先安抚",
-            "explain_boundary": "解释边界",
-            "change_topic": "换话题",
-            "pause": "暂停",
-        }
-        parts = [
-            f"情绪={emotion_labels.get(self.primary_emotion, self.primary_emotion)}",
-            f"风险={risk_labels.get(self.risk_level, self.risk_level)}",
-            f"参与度={engagement_labels.get(self.engagement_level, self.engagement_level)}",
-        ]
-        if self.conversation_signal.should_slow_down:
-            parts.append("建议放慢")
-        if self.boundary_signal.has_refusal or self.boundary_signal.has_privacy_concern:
-            parts.append("注意边界")
-        action = action_labels.get(self.recommended_action.action_type)
-        if action:
-            parts.append(f"动作={action}")
-        return "；".join(parts)
-
-
 InterviewState = Literal[
     "INIT",
     "OPENING_GENERATING",
@@ -83,6 +11,7 @@ InterviewState = Literal[
     "GUIDANCE_CARD",
     "READY_TO_INTERVIEW",
     "INTERVIEWING",
+    "end",
 ]
 EntryCardId = Literal["start_interview", "need_guidance", "need_more_guidance"]
 GuidanceCardId = Literal[
@@ -209,11 +138,13 @@ class DialogTurnResponse(BaseModel):
     max_guidance_rounds: int
     can_continue_guidance: bool
     response_source: ResponseSource = "none"
+    state_interview: dict[str, object] = Field(default_factory=dict)
 
 
 class InterviewStateResponse(BaseModel):
     session_id: str
     state: InterviewState
+    state_interview: dict[str, object] = Field(default_factory=dict)
 
 
 class UserInfoRequest(BaseModel):

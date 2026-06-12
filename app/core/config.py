@@ -15,7 +15,6 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_model: str = "qwen-plus"
     dashscope_interview_model: str = "qwen-plus"
-    dashscope_emotion_model: str = "qwen-turbo"
     dashscope_timeout_seconds: int = Field(default=60, ge=5)
     general_chat_prompt_file: str = "general_chat_system.txt"
 

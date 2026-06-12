@@ -18,7 +18,7 @@ class StateMachine:
     OPENING_DELIVERED -> READY_TO_INTERVIEW (选开始) | GUIDANCE_CARD (选顾虑)
     GUIDANCE_CARD -> GUIDANCE_CARD (继续引导) | READY_TO_INTERVIEW (确认开始)
     READY_TO_INTERVIEW -> INTERVIEWING
-    INTERVIEWING -> PAUSED (退出) | EMOTION_REVIEW (情绪触发) | COMPLETED (完成)
+    INTERVIEWING -> PAUSED (退出) | COMPLETED (完成)
     PAUSED -> RECONNECTING -> (根据断点恢复)
     """
 
@@ -28,12 +28,9 @@ class StateMachine:
         SystemState.OPENING_DELIVERED: {SystemState.READY_TO_INTERVIEW, SystemState.GUIDANCE_CARD, SystemState.PAUSED},
         SystemState.GUIDANCE_CARD: {SystemState.GUIDANCE_CARD, SystemState.READY_TO_INTERVIEW, SystemState.PAUSED},
         SystemState.READY_TO_INTERVIEW: {SystemState.INTERVIEWING},
-        SystemState.INTERVIEWING: {SystemState.INTERVIEWING, SystemState.EMOTION_REVIEW, SystemState.PAUSED, SystemState.COMPLETED},
-        SystemState.EMOTION_REVIEW: {SystemState.INTERVIEWING, SystemState.COMFORTING},
-        SystemState.COMFORTING: {SystemState.RESUME_INTERVIEW_CHECK, SystemState.PAUSED},
-        SystemState.RESUME_INTERVIEW_CHECK: {SystemState.INTERVIEWING, SystemState.COMFORTING},
+        SystemState.INTERVIEWING: {SystemState.INTERVIEWING, SystemState.PAUSED, SystemState.COMPLETED},
         SystemState.PAUSED: {SystemState.RECONNECTING},
-        SystemState.RECONNECTING: {SystemState.OPENING_GENERATING, SystemState.GUIDANCE_CARD, SystemState.INTERVIEWING, SystemState.COMFORTING},
+        SystemState.RECONNECTING: {SystemState.OPENING_GENERATING, SystemState.GUIDANCE_CARD, SystemState.INTERVIEWING},
         SystemState.COMPLETED: set(),
     }
 
@@ -83,7 +80,6 @@ class StateMachine:
             SystemState.OPENING_DELIVERED: SystemState.OPENING_GENERATING,
             SystemState.GUIDANCE_CARD: SystemState.GUIDANCE_CARD,
             SystemState.INTERVIEWING: SystemState.INTERVIEWING,
-            SystemState.COMFORTING: SystemState.GUIDANCE_CARD,
         }
         return resume_map.get(prev, SystemState.OPENING_GENERATING)
 

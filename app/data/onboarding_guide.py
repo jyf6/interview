@@ -26,7 +26,7 @@ ONBOARDING_GUIDE = {
             "step_id": "composer",
             "sequence": 3,
             "title": "在这里发送回答",
-            "body": "进入正式采访后，底部输入框会解锁。输入内容后点击发送，AI 会继续追问并展示情绪分析。",
+            "body": "进入正式采访后，底部输入框会解锁。输入内容后点击发送，AI 会按当前采访阶段继续追问。",
             "target_key": "composer",
             "placement": "top",
             "primary_action_label": "下一步",

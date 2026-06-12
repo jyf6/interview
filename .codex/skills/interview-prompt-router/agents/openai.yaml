@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "Interview Prompt Router"
+  short_description: "Route interviews and generate the next reply"
+  default_prompt: "Use $interview-prompt-router to choose the interview route and generate the next user-facing reply."

@@ -44,7 +44,6 @@ def handle_card_selection(session: SessionState, card_id: str) -> SessionRespons
 
     session_context_json = json.dumps({
         "current_state": session.current_state.value if hasattr(session.current_state, 'value') else str(session.current_state),
-        "last_emotion": session.session_context.last_emotion,
         "chat_rounds": len(session.chat_history),
     }, ensure_ascii=False)
 
