@@ -8,6 +8,8 @@ from app.services.interview_agent_service import (
     MAX_HISTORY_MESSAGE_CHARS,
     MAX_HISTORY_MESSAGES,
     InterviewAgentService,
+    InterviewRouteResult,
+    InterviewStageDetectionResult,
 )
 from app.services.interview_state_machine import InterviewStateMachine
 
@@ -15,6 +17,7 @@ from app.services.interview_state_machine import InterviewStateMachine
 class MemoryRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.lists: dict[str, list[str]] = {}
 
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
         self.values[key] = value
@@ -24,6 +27,19 @@ class MemoryRedis:
 
     async def delete(self, key: str) -> None:
         self.values.pop(key, None)
+        self.lists.pop(key, None)
+
+    async def expire(self, key: str, seconds: int) -> None:
+        return None
+
+    async def rpush(self, key: str, value: str) -> None:
+        self.lists.setdefault(key, []).append(value)
+
+    async def lrange(self, key: str, start: int, end: int) -> list[str]:
+        values = self.lists.get(key, [])
+        if end == -1:
+            end = len(values) - 1
+        return values[start : end + 1]
 
 
 class InterviewFlowRulesTest(unittest.TestCase):
@@ -41,7 +57,38 @@ class InterviewFlowRulesTest(unittest.TestCase):
         self.assertIn("message-11", formatted)
         self.assertNotIn("x" * (MAX_HISTORY_MESSAGE_CHARS + 1), formatted)
 
-    def test_parse_route_forces_emotional_guidance_to_not_decrement(self) -> None:
+    def test_format_history_can_include_full_stage_history(self) -> None:
+        messages = [
+            {"role": "user" if index % 2 == 0 else "assistant", "content": f"message-{index}"}
+            for index in range(12)
+        ]
+
+        formatted = InterviewAgentService._format_history(messages, limit=None)
+
+        self.assertEqual(len(formatted.splitlines()), 12)
+        self.assertIn("message-0", formatted)
+        self.assertIn("message-11", formatted)
+
+    def test_normalize_reply_removes_interviewer_prefix(self) -> None:
+        reply = InterviewAgentService._normalize_reply("采：那时候最让您难忘的是什么？")
+
+        self.assertEqual(reply, "那时候最让您难忘的是什么？")
+
+    def test_langgraph_selects_reply_node_from_route(self) -> None:
+        self.assertEqual(
+            InterviewAgentService._select_reply_node({"route": InterviewRouteResult(route="normal_interview")}),
+            "normal_reply",
+        )
+        self.assertEqual(
+            InterviewAgentService._select_reply_node({"route": InterviewRouteResult(route="extended_interview")}),
+            "extended_reply",
+        )
+        self.assertEqual(
+            InterviewAgentService._select_reply_node({"route": InterviewRouteResult(route="emotional_guidance")}),
+            "normal_reply",
+        )
+
+    def test_parse_route_normalizes_emotional_guidance_to_normal(self) -> None:
         raw = json.dumps(
             {
                 "route": "emotional_guidance",
@@ -55,12 +102,74 @@ class InterviewFlowRulesTest(unittest.TestCase):
             ensure_ascii=False,
         )
 
-        route = InterviewAgentService._parse_route(raw, "压力太大了，想起来就难受", 2)
+        route = InterviewAgentService._parse_route(raw)
 
-        self.assertEqual(route.route, "emotional_guidance")
+        self.assertEqual(route.route, "normal_interview")
+        self.assertEqual(route.emotion_type, "anxiety_heavy")
+        self.assertTrue(route.needs_emotional_support)
+        self.assertTrue(route.should_change_topic)
+        self.assertTrue(route.do_not_probe_current_topic)
         self.assertEqual(route.round_decrement, 1)
 
-    def test_parse_route_forces_low_engagement_to_decrement(self) -> None:
+    def test_parse_route_derives_decrement_when_model_omits_it(self) -> None:
+        raw = json.dumps(
+            {
+                "route": "normal_interview",
+                "emotion_type": "none",
+                "confidence": 0.8,
+                "reason": "用户回答稳定，应回到主流程。",
+                "should_change_topic": False,
+                "do_not_probe_current_topic": False,
+            },
+            ensure_ascii=False,
+        )
+
+        route = InterviewAgentService._parse_route(raw)
+
+        self.assertEqual(route.route, "normal_interview")
+        self.assertFalse(route.needs_emotional_support)
+        self.assertEqual(route.round_decrement, 1)
+
+    def test_parse_route_keeps_explicit_emotional_support_flag(self) -> None:
+        raw = json.dumps(
+            {
+                "route": "extended_interview",
+                "emotion_type": "sadness",
+                "needs_emotional_support": True,
+                "confidence": 0.82,
+                "reason": "用户讲到难过但仍提供了具体事件。",
+                "should_change_topic": False,
+                "do_not_probe_current_topic": False,
+            },
+            ensure_ascii=False,
+        )
+
+        route = InterviewAgentService._parse_route(raw)
+
+        self.assertEqual(route.route, "extended_interview")
+        self.assertTrue(route.needs_emotional_support)
+        self.assertEqual(route.round_decrement, 0)
+
+    def test_parse_route_derives_emotional_support_from_emotion_type(self) -> None:
+        raw = json.dumps(
+            {
+                "route": "normal_interview",
+                "emotion_type": "regret_self_blame",
+                "confidence": 0.78,
+                "reason": "用户表达明显遗憾和自责。",
+                "should_change_topic": False,
+                "do_not_probe_current_topic": False,
+            },
+            ensure_ascii=False,
+        )
+
+        route = InterviewAgentService._parse_route(raw)
+
+        self.assertEqual(route.route, "normal_interview")
+        self.assertTrue(route.needs_emotional_support)
+        self.assertEqual(route.round_decrement, 1)
+
+    def test_parse_route_ignores_legacy_emotional_guidance_decrement(self) -> None:
         raw = json.dumps(
             {
                 "route": "emotional_guidance",
@@ -74,19 +183,10 @@ class InterviewFlowRulesTest(unittest.TestCase):
             ensure_ascii=False,
         )
 
-        route = InterviewAgentService._parse_route(raw, "嗯", 2)
+        route = InterviewAgentService._parse_route(raw)
 
-        self.assertEqual(route.route, "emotional_guidance")
+        self.assertEqual(route.route, "normal_interview")
         self.assertEqual(route.round_decrement, 1)
-
-    def test_fallback_rich_content_can_follow_up_without_decrement(self) -> None:
-        route = InterviewAgentService._fallback_route(
-            "我还记得那时候每天很早起来去上学，后来有一次老师当着全班表扬我，这件事让我一直很难忘。",
-            2,
-        )
-
-        self.assertEqual(route.route, "extended_interview")
-        self.assertEqual(route.round_decrement, 0)
 
     def test_parse_route_keeps_explicit_extended_interview_without_decrement(self) -> None:
         raw = json.dumps(
@@ -103,7 +203,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
         )
         user_message = "那时候我还记得特别清楚，当时一个人去外地工作，后来第一次拿到工资，心里又紧张又高兴，这件事到现在印象很深。"
 
-        route = InterviewAgentService._parse_route(raw, user_message, 2)
+        route = InterviewAgentService._parse_route(raw)
 
         self.assertEqual(route.route, "extended_interview")
         self.assertEqual(route.round_decrement, 0)
@@ -118,36 +218,52 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "should_change_topic": False,
                 "do_not_probe_current_topic": False,
                 "round_decrement": 0,
-                "detected_stage": "S1",
             },
             ensure_ascii=False,
         )
 
-        route = InterviewAgentService._parse_route(raw, "这个跟我小时候一样，平时喜欢钓鱼。", 4)
+        route = InterviewAgentService._parse_route(raw)
 
         self.assertEqual(route.route, "extended_interview")
         self.assertEqual(route.round_decrement, 0)
 
-    def test_fallback_stage_entry_extends_with_rich_content(self) -> None:
-        route = InterviewAgentService._fallback_route(
-            "这个跟我小时候一样，平时喜欢钓鱼，后来经常和同学一起去河边，一待就是半天。",
-            4,
+    def test_parse_route_keeps_model_normal_for_relationship_support(self) -> None:
+        raw = json.dumps(
+            {
+                "route": "normal_interview",
+                "emotion_type": "none",
+                "confidence": 0.72,
+                "reason": "用户回答稳定。",
+                "should_change_topic": False,
+                "do_not_probe_current_topic": False,
+                "round_decrement": 1,
+            },
+            ensure_ascii=False,
         )
 
-        self.assertEqual(route.route, "extended_interview")
-        self.assertEqual(route.round_decrement, 0)
+        route = InterviewAgentService._parse_route(raw)
 
-    def test_first_answer_memorable_event_can_extend(self) -> None:
-        route = InterviewAgentService._fallback_route("印象最深的是第一次离家去深圳打工", 4)
+        self.assertEqual(route.route, "normal_interview")
+        self.assertEqual(route.round_decrement, 1)
 
-        self.assertEqual(route.route, "extended_interview")
-        self.assertEqual(route.round_decrement, 0)
+    def test_parse_route_keeps_model_normal_for_memorable_first_event(self) -> None:
+        raw = json.dumps(
+            {
+                "route": "normal_interview",
+                "emotion_type": "none",
+                "confidence": 0.72,
+                "reason": "用户回答稳定。",
+                "should_change_topic": False,
+                "do_not_probe_current_topic": False,
+                "round_decrement": 1,
+            },
+            ensure_ascii=False,
+        )
 
-    def test_relationship_support_short_answer_can_extend(self) -> None:
-        route = InterviewAgentService._fallback_route("有我的女朋友给了我很多鼓励", 0)
+        route = InterviewAgentService._parse_route(raw)
 
-        self.assertEqual(route.route, "extended_interview")
-        self.assertEqual(route.round_decrement, 0)
+        self.assertEqual(route.route, "normal_interview")
+        self.assertEqual(route.round_decrement, 1)
 
     def test_parse_route_treats_collective_memory_as_followup_candidate(self) -> None:
         raw = json.dumps(
@@ -164,7 +280,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
         )
         user_message = "我们那个院子里大家都很熟，谁家做了饭会端出来分一点，周围的人有事也互相招呼，这种关系一直没变。"
 
-        route = InterviewAgentService._parse_route(raw, user_message, 3)
+        route = InterviewAgentService._parse_route(raw)
 
         self.assertEqual(route.route, "extended_interview")
         self.assertEqual(route.round_decrement, 0)
@@ -183,29 +299,41 @@ class InterviewFlowRulesTest(unittest.TestCase):
             ensure_ascii=False,
         )
 
-        route = InterviewAgentService._parse_route(raw, "那时候主要是在家里帮忙。", 2)
+        route = InterviewAgentService._parse_route(raw)
 
         self.assertEqual(route.route, "normal_interview")
         self.assertEqual(route.round_decrement, 1)
 
-    def test_parse_route_corrects_llm_childhood_misclassification_for_work(self) -> None:
+    def test_parse_stage_detection_normalizes_stage_name(self) -> None:
         raw = json.dumps(
             {
-                "route": "extended_interview",
-                "emotion_type": "none",
-                "confidence": 0.8,
-                "reason": "用户内容具体。",
-                "should_change_topic": False,
-                "do_not_probe_current_topic": False,
-                "round_decrement": 0,
-                "detected_stage": "S1",
+                "stage_code": "S4",
+                "stage_name": "模型写错也以代码为准",
+                "judgment_reason": "讲述退休后的生活。",
             },
             ensure_ascii=False,
         )
 
-        route = InterviewAgentService._parse_route(raw, "我在深圳打工那几年，刚开始什么都不熟。", 2)
+        result = InterviewAgentService._parse_stage_detection(raw)
 
-        self.assertEqual(route.detected_stage, "S2")
+        self.assertEqual(result.stage_code, "S4")
+        self.assertEqual(result.stage_name, "岁月阅历")
+        self.assertEqual(result.judgment_reason, "讲述退休后的生活。")
+
+    def test_parse_stage_detection_treats_invalid_stage_as_unclear(self) -> None:
+        raw = json.dumps(
+            {
+                "stage_code": "S9",
+                "stage_name": "未知",
+                "judgment_reason": "无法确认。",
+            },
+            ensure_ascii=False,
+        )
+
+        result = InterviewAgentService._parse_stage_detection(raw)
+
+        self.assertEqual(result.stage_code, "unclear")
+        self.assertEqual(result.stage_name, "未识别")
 
     def test_plain_response_after_extension_returns_to_main_flow(self) -> None:
         raw = json.dumps(
@@ -221,10 +349,62 @@ class InterviewFlowRulesTest(unittest.TestCase):
             ensure_ascii=False,
         )
 
-        route = InterviewAgentService._parse_route(raw, "也差不多就是这样。", 2)
+        route = InterviewAgentService._parse_route(raw)
 
         self.assertEqual(route.route, "normal_interview")
         self.assertEqual(route.round_decrement, 1)
+
+    def test_parse_main_question_reply_extracts_reply_and_question_id(self) -> None:
+        raw = json.dumps({"question": "next question", "question_id": "3"})
+
+        result = InterviewAgentService._parse_main_question_reply(raw)
+
+        self.assertEqual(result.reply, "next question")
+        self.assertEqual(result.main_question_id, 3)
+
+    def test_parse_main_question_reply_allows_supplement_question_id_when_stage_complete(self) -> None:
+        raw = json.dumps({"question": "anything else?", "question_id": "9"})
+
+        result = InterviewAgentService._parse_main_question_reply(raw, allow_supplement=True)
+
+        self.assertEqual(result.reply, "anything else?")
+        self.assertEqual(result.main_question_id, 9)
+
+    def test_parse_main_question_reply_rejects_invalid_question_id(self) -> None:
+        raw = json.dumps({"reply": "next question", "question_id": 9})
+
+        with self.assertRaises(ValueError):
+            InterviewAgentService._parse_main_question_reply(raw)
+
+    def test_set_active_main_question_tracks_supplement_without_counting_it(self) -> None:
+        progress = {
+            "stage_id": "S1",
+            "awaiting_stage_completion": 1,
+            "completed_main_question_ids": list(range(1, 9)),
+        }
+
+        updated = InterviewStateMachine._set_active_main_question(progress, "normal_interview", 9)
+
+        self.assertEqual(updated["active_main_question_id"], 9)
+        answered = InterviewStateMachine._mark_active_main_question_answered(updated)
+        self.assertEqual(answered["completed_main_question_ids"], list(range(1, 9)))
+        self.assertEqual(answered["supplement_answered"], 1)
+
+    def test_stage_messages_include_only_current_stage_with_legacy_fallback(self) -> None:
+        async def run_case() -> None:
+            service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
+            await service._append_message("session-1", "assistant", "开场")
+            await service._append_message("session-1", "user", "童年回答", stage_id="S1")
+            await service._append_message("session-1", "assistant", "童年问题", stage_id="S1")
+            await service._append_message("session-1", "user", "青春回答", stage_id="S2")
+
+            s1_messages = await service._get_stage_messages("session-1", "S1")
+            s3_messages = await service._get_stage_messages("session-1", "S3")
+
+            self.assertEqual([message["content"] for message in s1_messages], ["童年回答", "童年问题"])
+            self.assertEqual([message["content"] for message in s3_messages], ["开场"])
+
+        asyncio.run(run_case())
 
     def test_normal_route_with_decrement_uses_planned_flow_prompt(self) -> None:
         service = InterviewAgentService()
@@ -240,22 +420,87 @@ class InterviewFlowRulesTest(unittest.TestCase):
                     "round_decrement": 1,
                 },
                 ensure_ascii=False,
-            ),
-            "那时候主要是在家里帮忙。",
-            2,
+            )
         )
 
         prompt = service._build_reply_prompt(
             route,
             "那时候主要是在家里帮忙。",
-            [],
+            [{"role": "assistant", "content": "旧问题"}, {"role": "user", "content": "旧回答"}],
             "阶段：S1 童年时光\n本轮采访任务：环境与处境",
             2,
+            [1, 3],
         )
 
-        self.assertIn("当前还处于计划流程推进阶段", prompt)
-        self.assertIn("按“本轮采访任务”补齐主流程信息", prompt)
+        self.assertIn("个人传记【童年阶段】采访主持人", prompt)
+        self.assertIn("【本阶段全部历史对话】", prompt)
+        self.assertIn("采：旧问题", prompt)
+        self.assertIn("受：旧回答", prompt)
+        self.assertIn("【当前阶段已收集主问题编号】\n1、3", prompt)
+        self.assertIn("【用户上一轮最新回答】\n那时候主要是在家里帮忙。", prompt)
+        self.assertIn("历史承接与情绪覆盖规则", prompt)
+        self.assertIn("默认历史承接", prompt)
+        self.assertIn("情绪安慰规则只覆盖“如何承接用户上一轮回答”", prompt)
+        self.assertNotIn("{{", prompt)
         self.assertNotIn("本轮不推进计划流程", prompt)
+        self.assertNotIn("## 情绪安慰融合规则", prompt)
+
+    def test_normal_prompt_appends_emotional_support_rules_when_needed(self) -> None:
+        service = InterviewAgentService()
+        route = InterviewAgentService._parse_route(
+            json.dumps(
+                {
+                    "route": "normal_interview",
+                    "emotion_type": "anxiety_heavy",
+                    "needs_emotional_support": True,
+                    "confidence": 0.86,
+                    "reason": "用户表达压力沉重，需要降压承接。",
+                    "should_change_topic": True,
+                    "do_not_probe_current_topic": True,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        prompt = service._build_reply_prompt(
+            route,
+            "那段时间压力很大，不太想细说。",
+            [],
+            "阶段：S3 人生转折\n本轮采访任务：由当前阶段主问题提示词在 1-8 号主问题中选择",
+            6,
+            [1, 2],
+        )
+
+        self.assertIn("情绪安慰融合规则", prompt)
+        self.assertIn("本规则只覆盖当前主问题/追问提示词中的“历史承接、过渡语、共情回应”写法", prompt)
+        self.assertIn("本规则不覆盖当前采访任务", prompt)
+        self.assertIn("仍然只输出包含 question_id 和 question 的 JSON", prompt)
+        self.assertIn("安慰只放进 question 字段里", prompt)
+        self.assertIn("当 emotion_type = anxiety_heavy 时使用", prompt)
+        self.assertIn("这种压力不是一句话能说轻的", prompt)
+        self.assertNotIn("当 emotion_type = sadness 时使用", prompt)
+        self.assertIn('"needs_emotional_support":true', prompt)
+        self.assertNotIn("route = emotional_guidance", prompt)
+
+    def test_emotional_support_unknown_type_uses_unclear_rules(self) -> None:
+        service = InterviewAgentService()
+        route = InterviewRouteResult(
+            route="normal_interview",
+            emotion_type="unexpected",
+            needs_emotional_support=True,
+        )
+
+        prompt = service._build_reply_prompt(
+            route,
+            "这段不太好说。",
+            [],
+            "阶段：S3 人生转折\n本轮采访任务：由当前阶段主问题提示词在 1-8 号主问题中选择",
+            6,
+            [],
+        )
+
+        self.assertIn("当 emotion_type = unclear 或无法匹配具体情绪类型时使用", prompt)
+        self.assertIn("不给用户贴情绪标签", prompt)
 
     def test_extended_route_uses_detail_followup_prompt(self) -> None:
         service = InterviewAgentService()
@@ -271,9 +516,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                     "round_decrement": 1,
                 },
                 ensure_ascii=False,
-            ),
-            "那时候我还记得特别清楚，当时一个人去外地工作，后来第一次拿到工资，心里又紧张又高兴，这件事到现在印象很深。",
-            2,
+            )
         )
 
         prompt = service._build_reply_prompt(
@@ -285,9 +528,53 @@ class InterviewFlowRulesTest(unittest.TestCase):
         )
 
         self.assertEqual(route.round_decrement, 0)
-        self.assertIn("生成采访者下一句扩展追问", prompt)
-        self.assertIn("本轮不推进计划流程", prompt)
+        self.assertIn("个人传记青春岁月阶段专属采访者", prompt)
+        self.assertIn("无新内容可追问时返回指定指令", prompt)
+        self.assertIn("【本阶段全部历史对话】", prompt)
+        self.assertIn("【当前阶段已收集主问题编号】\n无", prompt)
+        self.assertIn("历史承接与情绪覆盖规则", prompt)
+        self.assertIn("情绪安慰规则只覆盖“如何承接用户本轮情绪”", prompt)
+        self.assertIn("route", prompt)
+        self.assertNotIn("{{", prompt)
         self.assertNotIn("当前还处于计划流程推进阶段", prompt)
+        self.assertNotIn("## 情绪安慰融合规则", prompt)
+
+    def test_extended_prompt_appends_emotional_support_rules_when_needed(self) -> None:
+        service = InterviewAgentService()
+        route = InterviewAgentService._parse_route(
+            json.dumps(
+                {
+                    "route": "extended_interview",
+                    "emotion_type": "sadness",
+                    "needs_emotional_support": True,
+                    "confidence": 0.84,
+                    "reason": "用户讲到难过经历且仍有具体素材。",
+                    "should_change_topic": False,
+                    "do_not_probe_current_topic": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        prompt = service._build_reply_prompt(
+            route,
+            "那次比赛输了以后我挺难受，但师父一直陪着我复盘。",
+            [],
+            "阶段：S2 青春岁月\n本轮采访任务：由当前阶段主问题提示词在 1-8 号主问题中选择",
+            5,
+            [1],
+        )
+
+        self.assertIn("情绪安慰融合规则", prompt)
+        self.assertIn("本规则只覆盖当前主问题/追问提示词中的“历史承接、过渡语、共情回应”写法", prompt)
+        self.assertIn("本规则不覆盖当前采访任务", prompt)
+        self.assertIn("仍然只输出一句采访话术", prompt)
+        self.assertIn("先安慰，再围绕当前素材问一个低压力开放问题", prompt)
+        self.assertIn("当 emotion_type = sadness 时使用", prompt)
+        self.assertIn("这段记忆里确实有些沉", prompt)
+        self.assertNotIn("当 emotion_type = anxiety_heavy 时使用", prompt)
+        self.assertIn('"needs_emotional_support":true', prompt)
+        self.assertNotIn("route = emotional_guidance", prompt)
 
     def test_stage_task_clamps_legacy_remaining_rounds(self) -> None:
         task = InterviewStateMachine._stage_task("S1", 4)
@@ -301,97 +588,126 @@ class InterviewFlowRulesTest(unittest.TestCase):
 
         self.assertIn("阶段：S1 童年时光", description)
         self.assertIn("必须覆盖：", description)
-        self.assertIn("阶段切换衔接：无", description)
-        self.assertIn("本轮采访任务：环境与处境", description)
-        self.assertLess(len(description), 500)
+        self.assertIn("流程衔接说明：当前处于童年时光阶段", description)
+        self.assertIn("阶段切换衔接：当前处于童年时光阶段", description)
+        self.assertNotIn("阶段切换衔接：无", description)
+        self.assertIn("当前阶段已收集主问题编号：无", description)
+        self.assertIn("当前阶段待收集主问题编号：1、2、3、4、5、6、7、8", description)
+        self.assertIn("当前阶段剩余主问题数量：8", description)
+        self.assertIn("本轮采访任务：由当前阶段主问题提示词在 1-8 号主问题中选择", description)
+        self.assertLess(len(description), 780)
 
     def test_initial_detected_stage_can_start_from_user_mentioned_stage(self) -> None:
         progress = {"stage_id": "S1", "remaining_rounds": 4, "completed": 0}
+        detection = InterviewStageDetectionResult(stage_code="S3")
         updated = InterviewStateMachine._apply_initial_detected_stage(
             progress,
-            "我最想先说结婚成家那几年，孩子出生以后责任一下子重了。",
+            detection,
             [],
         )
 
         self.assertEqual(updated["stage_id"], "S3")
-        self.assertEqual(updated["remaining_rounds"], 4)
+        self.assertEqual(updated["remaining_rounds"], 8)
+        self.assertEqual(updated["started_stage_id"], "S3")
+        self.assertEqual(updated["stage_flow"][0]["stage_id"], "S3")
+        self.assertEqual(updated["stage_flow"][0]["status"], "active")
 
-    def test_stage_detection_treats_shenzhen_work_as_youth_not_childhood(self) -> None:
-        stage = InterviewAgentService._detect_stage("我在深圳打工那几年，刚开始什么都不熟。")
+    def test_initial_unclear_stage_records_default_start_stage(self) -> None:
+        progress = {"stage_id": "S1", "remaining_rounds": 8, "completed": 0}
+        detection = InterviewStageDetectionResult(stage_code="unclear")
 
-        self.assertEqual(stage, "S2")
+        updated = InterviewStateMachine._apply_initial_detected_stage(progress, detection, [])
 
-    def test_stage_detection_requires_childhood_context_for_s1(self) -> None:
-        stage = InterviewAgentService._detect_stage("我12岁以前一直在老家，小时候主要帮父母干活。")
+        self.assertEqual(updated["started_stage_id"], "S1")
+        self.assertEqual(updated["stage_flow"][0]["stage_id"], "S1")
+        self.assertEqual(updated["stage_statuses"]["S1"], "active")
 
-        self.assertEqual(stage, "S1")
+    def test_progress_view_records_stage_flow_and_plan_snapshot(self) -> None:
+        progress = InterviewStateMachine._sync_stage_flow(
+            {
+                "stage_id": "S3",
+                "remaining_rounds": 6,
+                "completed": 0,
+                "completed_main_question_ids": [1, 4],
+                "visited_stage_ids": ["S1"],
+                "pending_stage_ids": ["S4"],
+                "pending_stage_mentions": {"S4": "退休后清闲一些"},
+                "stage_statuses": {"S1": "completed", "S2": "not_started", "S3": "active", "S4": "pending"},
+                "stage_flow": [
+                    {"stage_id": "S1", "stage_name": "童年时光", "status": "completed"},
+                    {"stage_id": "S3", "stage_name": "人生转折", "status": "active"},
+                ],
+                "started_stage_id": "S3",
+            }
+        )
+        view = InterviewStateMachine._hydrate_progress_view(progress)
 
-    def test_stage_detection_treats_married_work_for_family_as_turning_point(self) -> None:
-        stage = InterviewAgentService._detect_stage("结婚后我去深圳打工养家，孩子还小，那几年压力特别大。")
+        self.assertEqual(view["stage_id"], "S3")
+        self.assertEqual(view["stage_name"], "人生转折")
+        self.assertEqual(view["stage_order"], 3)
+        self.assertEqual(view["started_stage_id"], "S3")
+        self.assertEqual(view["started_stage_name"], "人生转折")
+        self.assertEqual(view["started_stage_order"], 3)
+        self.assertEqual(view["completed_stage_ids"], ["S1"])
+        self.assertEqual(view["stage_statuses"]["S1"], "completed")
+        self.assertEqual(view["stage_statuses"]["S3"], "active")
+        self.assertEqual(view["stage_statuses"]["S4"], "pending")
+        self.assertEqual(view["stage_flow"][1]["completed_main_question_ids"], [1, 4])
+        self.assertEqual(view["stage_plan"][2]["stage_id"], "S3")
+        self.assertTrue(view["stage_plan"][2]["is_current"])
+        self.assertEqual(view["stage_plan"][3]["mentioned_context"], "退休后清闲一些")
 
-        self.assertEqual(stage, "S3")
+    def test_completed_stage_mention_is_not_added_to_pending_again(self) -> None:
+        progress = {
+            "stage_id": "S3",
+            "remaining_rounds": 5,
+            "completed": 0,
+            "visited_stage_ids": ["S1"],
+            "pending_stage_ids": [],
+            "stage_statuses": {"S1": "completed", "S3": "active"},
+        }
+        detection = InterviewStageDetectionResult(stage_code="S1")
 
-    def test_low_engagement_returns_to_current_stage_main_question(self) -> None:
-        progress = {"stage_id": "S2", "remaining_rounds": 2, "completed": 0}
-        route = InterviewAgentService._fallback_route("记不清了", 2)
+        updated = InterviewStateMachine._apply_detected_stage_mention(progress, detection, "小时候那段也说过了")
 
-        updated = InterviewStateMachine._apply_route_stage_shift(progress, route)
+        self.assertEqual(updated["pending_stage_ids"], [])
+        self.assertEqual(updated["stage_id"], "S3")
 
-        self.assertEqual(updated["stage_id"], "S2")
-        self.assertEqual(updated["remaining_rounds"], 2)
-        self.assertEqual(route.round_decrement, 1)
-
-    def test_resistance_after_extension_returns_to_current_stage_main_question(self) -> None:
+    def test_legacy_emotional_route_is_normalized_before_state_progress(self) -> None:
         progress = {"stage_id": "S2", "remaining_rounds": 3, "completed": 0}
-        route = InterviewAgentService._fallback_route("这个不想说了，跳过吧", 3)
-
-        updated = InterviewStateMachine._apply_route_stage_shift(progress, route)
-        reply = InterviewAgentService._fallback_reply(
-            route,
-            "阶段：S2 青春岁月\n本轮采访任务：日常主线。下一问要覆盖这段时期平日主要怎么过、主要在忙什么。",
-            "这个不想说了，跳过吧",
+        route = InterviewAgentService._parse_route(
+            json.dumps(
+                {
+                    "route": "emotional_guidance",
+                    "emotion_type": "unclear",
+                    "confidence": 0.8,
+                    "reason": "用户回复很短，需要降压。",
+                    "should_change_topic": True,
+                    "do_not_probe_current_topic": False,
+                    "round_decrement": 1,
+                },
+                ensure_ascii=False,
+            )
         )
 
-        self.assertEqual(updated["stage_id"], "S2")
-        self.assertEqual(updated["remaining_rounds"], 3)
-        self.assertEqual(route.round_decrement, 1)
-        self.assertIn("不顺着这里深聊", reply)
-        self.assertIn("平日里主要是怎么过", reply)
-
-    def test_negative_emotion_stays_in_current_stage_and_advances_main_question(self) -> None:
-        progress = {"stage_id": "S2", "remaining_rounds": 3, "completed": 0}
-        route = InterviewAgentService._fallback_route("那时候确实不容易，现在想起来挺感慨。", 3)
-
         updated = InterviewStateMachine._apply_route_stage_shift(progress, route)
 
-        self.assertEqual(route.route, "emotional_guidance")
+        self.assertEqual(route.route, "normal_interview")
+        self.assertTrue(route.needs_emotional_support)
         self.assertEqual(route.round_decrement, 1)
         self.assertEqual(updated["stage_id"], "S2")
-
-    def test_emotional_fallback_reply_returns_to_current_main_question(self) -> None:
-        route = InterviewAgentService._fallback_route("那时候压力太大，想起来就难受。", 3)
-        reply = InterviewAgentService._fallback_reply(
-            route,
-            "阶段：S3 人生转折\n本轮采访任务：关键事件。下一问要覆盖这段时期最有代表性的一件大事、转折、高光或困难。",
-            "那时候压力太大，想起来就难受。",
-        )
-
-        self.assertIn("不深挖难受的地方", reply)
-        self.assertIn("比较有代表性的事", reply)
-
-    def test_final_stage_fallback_reply_ends_without_new_question(self) -> None:
-        route = InterviewAgentService._fallback_route("谢谢，我也说得差不多了。", 1)
-        reply = InterviewAgentService._fallback_reply(route, "阶段：S5 收尾总结\n本轮采访任务：最终收尾")
-
-        self.assertIn("今天的采访就先到这里", reply)
-        self.assertNotIn("？", reply)
 
     def test_interview_progress_does_not_advance_when_round_decrement_is_zero(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
             context = InterviewContext(session_id="session-1", state="INTERVIEWING", created_at=now, updated_at=now)
-            progress = {"stage_id": "S1", "remaining_rounds": 3, "completed": 0}
+            progress = {
+                "stage_id": "S1",
+                "remaining_rounds": 3,
+                "completed": 0,
+                "completed_main_question_ids": [1, 2, 3, 4, 5],
+            }
 
             updated = await service._advance_interview_progress(context, progress, round_decrement=0)
 
@@ -406,18 +722,26 @@ class InterviewFlowRulesTest(unittest.TestCase):
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
             context = InterviewContext(session_id="session-1", state="INTERVIEWING", created_at=now, updated_at=now)
-            progress = {"stage_id": "S1", "remaining_rounds": 1, "completed": 0}
+            progress = {
+                "stage_id": "S1",
+                "remaining_rounds": 1,
+                "completed": 0,
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7],
+                "active_main_question_id": 8,
+            }
 
-            updated = await service._advance_interview_progress(context, progress, round_decrement=1)
+            answered = service._mark_active_main_question_answered(progress)
+            updated = await service._advance_interview_progress(context, answered, round_decrement=1)
 
             self.assertEqual(updated["stage_id"], "S1")
             self.assertEqual(updated["remaining_rounds"], 0)
             self.assertEqual(updated["completed"], 0)
             self.assertEqual(updated["awaiting_stage_completion"], 1)
+            self.assertEqual(updated["completed_main_question_ids"], [1, 2, 3, 4, 5, 6, 7, 8])
 
         asyncio.run(run_case())
 
-    def test_awaiting_stage_completion_switches_after_user_answer(self) -> None:
+    def test_awaiting_stage_completion_stays_in_current_stage_for_supplement_prompt(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
@@ -429,15 +753,21 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "visited_stage_ids": [],
                 "pending_stage_ids": [],
                 "awaiting_stage_completion": 1,
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
 
             updated = await service._complete_awaiting_stage_if_needed(context, progress)
 
-            self.assertEqual(updated["stage_id"], "S2")
-            self.assertEqual(updated["remaining_rounds"], 4)
+            self.assertEqual(updated["stage_id"], "S1")
+            self.assertEqual(updated["remaining_rounds"], 0)
             self.assertEqual(updated["completed"], 0)
-            self.assertEqual(updated["awaiting_stage_completion"], 0)
-            self.assertEqual(updated["visited_stage_ids"], ["S1"])
+            self.assertEqual(updated["awaiting_stage_completion"], 1)
+            self.assertEqual(updated["visited_stage_ids"], [])
+            self.assertEqual(updated["completed_main_question_ids"], [1, 2, 3, 4, 5, 6, 7, 8])
+            self.assertEqual(updated["stage_flow"][0]["stage_id"], "S1")
+            self.assertEqual(updated["stage_flow"][0]["status"], "active")
+            self.assertEqual(updated["stage_statuses"]["S1"], "active")
+            self.assertEqual(updated["stage_statuses"]["S2"], "not_started")
 
         asyncio.run(run_case())
 
@@ -453,8 +783,9 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "visited_stage_ids": [],
                 "pending_stage_ids": [],
                 "awaiting_stage_completion": 1,
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
-            route = InterviewAgentService._fallback_route("有我的女朋友给了我很多鼓励", 0)
+            route = InterviewRouteResult(route="extended_interview", round_decrement=0)
 
             if int(progress.get("awaiting_stage_completion", 0)) and route.route != "extended_interview":
                 progress = await service._complete_awaiting_stage_if_needed(context, progress)
@@ -467,7 +798,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
 
         asyncio.run(run_case())
 
-    def test_interview_progress_backfills_unvisited_stages_after_user_chosen_start(self) -> None:
+    def test_interview_progress_does_not_backfill_unvisited_stages_while_switching_disabled(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
@@ -478,18 +809,20 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "completed": 0,
                 "visited_stage_ids": [],
                 "pending_stage_ids": [],
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
 
             waiting = await service._advance_interview_progress(context, progress, round_decrement=1)
             updated = await service._complete_awaiting_stage_if_needed(context, waiting)
 
-            self.assertEqual(updated["stage_id"], "S1")
-            self.assertEqual(updated["remaining_rounds"], 4)
-            self.assertEqual(updated["visited_stage_ids"], ["S3"])
+            self.assertEqual(updated["stage_id"], "S3")
+            self.assertEqual(updated["remaining_rounds"], 0)
+            self.assertEqual(updated["visited_stage_ids"], [])
+            self.assertEqual(updated["awaiting_stage_completion"], 1)
 
         asyncio.run(run_case())
 
-    def test_detected_stage_mention_is_prioritized_after_current_stage_finishes(self) -> None:
+    def test_detected_stage_mention_is_recorded_but_not_prioritized_while_switching_disabled(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
@@ -500,18 +833,20 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "completed": 0,
                 "visited_stage_ids": [],
                 "pending_stage_ids": ["S4"],
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
 
             waiting = await service._advance_interview_progress(context, progress, round_decrement=1)
             updated = await service._complete_awaiting_stage_if_needed(context, waiting)
 
-            self.assertEqual(updated["stage_id"], "S4")
-            self.assertEqual(updated["remaining_rounds"], 4)
-            self.assertEqual(updated["visited_stage_ids"], ["S3"])
+            self.assertEqual(updated["stage_id"], "S3")
+            self.assertEqual(updated["remaining_rounds"], 0)
+            self.assertEqual(updated["pending_stage_ids"], ["S4"])
+            self.assertEqual(updated["visited_stage_ids"], [])
 
         asyncio.run(run_case())
 
-    def test_pending_stage_transition_carries_user_mentioned_context(self) -> None:
+    def test_pending_stage_context_is_kept_while_switching_disabled(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
@@ -522,6 +857,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "completed": 0,
                 "visited_stage_ids": [],
                 "pending_stage_ids": ["S4"],
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
                 "pending_stage_mentions": {"S4": "现在退休后倒是轻松多了"},
             }
 
@@ -529,13 +865,63 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._complete_awaiting_stage_if_needed(context, waiting)
             description = InterviewStateMachine._stage_description(updated)
 
-            self.assertEqual(updated["stage_id"], "S4")
-            self.assertIn("现在退休后倒是轻松多了", description)
-            self.assertIn("阶段切换衔接：用户上一阶段曾提到", description)
+            self.assertEqual(updated["stage_id"], "S3")
+            self.assertEqual(updated["pending_stage_mentions"]["S4"], "现在退休后倒是轻松多了")
+            self.assertIn("流程衔接说明：当前处于人生转折阶段", description)
+            self.assertNotIn("阶段切换衔接：无", description)
 
         asyncio.run(run_case())
 
-    def test_completed_stages_are_skipped_when_backfilling(self) -> None:
+    def test_supplement_answer_completion_moves_to_pending_stage(self) -> None:
+        async def run_case() -> None:
+            service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
+            now = datetime.now(UTC)
+            context = InterviewContext(session_id="session-1", state="INTERVIEWING", created_at=now, updated_at=now)
+            progress = {
+                "stage_id": "S3",
+                "remaining_rounds": 0,
+                "completed": 0,
+                "visited_stage_ids": [],
+                "pending_stage_ids": ["S4"],
+                "pending_stage_mentions": {"S4": "现在退休后倒是轻松多了"},
+                "awaiting_stage_completion": 1,
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                "active_main_question_id": 9,
+            }
+
+            answered = service._mark_active_main_question_answered(progress)
+            updated = await service._complete_awaiting_stage_if_needed(context, answered)
+
+            self.assertEqual(updated["stage_id"], "S4")
+            self.assertEqual(updated["remaining_rounds"], 8)
+            self.assertEqual(updated["visited_stage_ids"], ["S3"])
+            self.assertEqual(updated["completed_stage_ids"], ["S3"])
+            self.assertEqual(updated["completed_main_question_ids"], [])
+            self.assertEqual(updated["supplement_answered"], 0)
+            self.assertIn("岁月阅历", updated["stage_transition_hint"])
+            self.assertNotIn("S4", updated["pending_stage_mentions"])
+
+        asyncio.run(run_case())
+
+    def test_route_transition_hint_is_prompt_visible(self) -> None:
+        progress = {
+            "stage_id": "S2",
+            "remaining_rounds": 6,
+            "completed": 0,
+            "stage_transition_hint": "",
+        }
+
+        updated = InterviewStateMachine._set_turn_transition_hint(
+            progress,
+            route_name="extended_interview",
+            history=[{"role": "user", "content": "以前练拳的时候师父很照顾我"}],
+        )
+        description = InterviewStateMachine._stage_description(updated)
+
+        self.assertIn("流程衔接说明：当前仍在青春岁月阶段，本轮路由为扩展追问", description)
+        self.assertIn("阶段切换衔接：当前仍在青春岁月阶段，本轮路由为扩展追问", description)
+
+    def test_completed_stages_are_not_reopened_while_switching_disabled(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
@@ -546,19 +932,23 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "completed": 0,
                 "visited_stage_ids": ["S3"],
                 "pending_stage_ids": [],
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
 
             waiting = await service._advance_interview_progress(context, progress, round_decrement=1)
             updated = await service._complete_awaiting_stage_if_needed(context, waiting)
 
-            self.assertEqual(updated["stage_id"], "S2")
-            self.assertEqual(updated["visited_stage_ids"], ["S3", "S1"])
+            self.assertEqual(updated["stage_id"], "S1")
+            self.assertEqual(updated["visited_stage_ids"], ["S3"])
+            self.assertEqual(updated["stage_statuses"]["S3"], "completed")
+            self.assertEqual(updated["stage_statuses"]["S1"], "active")
+            self.assertEqual(updated["stage_statuses"]["S2"], "not_started")
             description = InterviewStateMachine._stage_description(updated)
-            self.assertIn("阶段切换衔接：无", description)
+            self.assertIn("编号 9 的补充询问", description)
 
         asyncio.run(run_case())
 
-    def test_final_stage_ends_only_after_user_answers_last_question(self) -> None:
+    def test_final_stage_completes_after_supplement_answer(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             now = datetime.now(UTC)
@@ -569,17 +959,17 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "completed": 0,
                 "visited_stage_ids": ["S1", "S2", "S3", "S4"],
                 "pending_stage_ids": [],
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                "active_main_question_id": 9,
             }
 
-            waiting = await service._advance_interview_progress(context, progress, round_decrement=1)
-            self.assertEqual(waiting["stage_id"], "S5")
-            self.assertEqual(waiting["completed"], 0)
-            self.assertEqual(waiting["awaiting_stage_completion"], 1)
+            answered = service._mark_active_main_question_answered(progress)
+            updated = await service._complete_awaiting_stage_if_needed(context, answered)
 
-            updated = await service._complete_awaiting_stage_if_needed(context, waiting)
             self.assertEqual(updated["completed"], 1)
             self.assertEqual(updated["awaiting_stage_completion"], 0)
             self.assertEqual(updated["visited_stage_ids"], ["S1", "S2", "S3", "S4", "S5"])
+            self.assertEqual(updated["stage_id"], "S5")
 
         asyncio.run(run_case())
 

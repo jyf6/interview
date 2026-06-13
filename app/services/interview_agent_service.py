@@ -1,121 +1,165 @@
 import asyncio
 import json
-import logging
-import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
+from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
-from app.core.config import settings
 from app.core.llm_client import interview_llm
 from app.core.perf import perf_span
 
-logger = logging.getLogger(__name__)
-
-MAX_HISTORY_MESSAGES = 8
-MAX_HISTORY_MESSAGE_CHARS = 500
-HIGH_ENGAGEMENT_MIN_CHARS = 40
-
-RESISTANCE_WORDS = ["不想说", "别提", "算了", "没必要", "过去了", "不愿提", "不多说", "跳过"]
-LOW_ENGAGEMENT_WORDS = ["嗯", "还行", "就这样", "差不多", "没什么", "记不清", "想不起来"]
-MILD_EMOTION_WORDS = ["有点遗憾", "挺感慨", "不容易", "不是滋味", "有些后悔", "有点想念", "怀念"]
-STRONG_EMOTION_WORDS = ["越想越难受", "都怪我", "特别后悔", "憋得慌", "压力太大", "放不下", "开心不起来", "没人说话"]
-HIGH_ENGAGEMENT_MARKERS = [
-    "我还记得",
-    "特别记得",
-    "有一次",
-    "那时候",
-    "那会儿",
-    "当时",
-    "后来",
-    "结果",
-    "因为",
-    "所以",
-    "现在想起来",
-    "到现在",
-    "印象很深",
-    "印象最深",
-    "难忘",
-    "最难忘",
-    "第一次",
-    "我们那片",
-    "我们那个院子",
-    "我们那条巷子",
-    "我们那个年级",
-    "我们那个车间",
-    "我们那个圈子",
-    "大家都",
-    "周围的人",
-    "那几年",
-    "一直没变",
-    "后来影响",
+TurnGraphNextNode = Literal[
+    "normal_reply",
+    "extended_reply",
 ]
-RELATION_SUPPORT_MARKERS = [
-    "女朋友",
-    "男朋友",
-    "对象",
-    "恋人",
-    "爱人",
-    "伴侣",
-    "妻子",
-    "丈夫",
-    "老婆",
-    "老公",
-    "朋友",
-    "同事",
-    "师傅",
-    "老师",
-    "家人",
-]
-SUPPORT_ACTION_MARKERS = ["鼓励", "支持", "陪", "帮", "帮助", "撑着", "安慰", "照顾", "陪伴"]
-
-SKILL_REFERENCES_DIR = (
-    Path(__file__).resolve().parents[2]
-    / ".codex"
-    / "skills"
-    / "interview-prompt-router-zh"
-    / "references"
-)
-
-ICEBREAKER_FALLBACK = (
-    "采：您好，今天想陪您慢慢聊聊过往的人生故事，咱们就像唠家常一样，"
-    "不用准备，也不用讲得多完整。最先想起的，是哪一段日子呢？"
-)
-INTERVIEW_FALLBACK = "采：我已经记下来了。您愿意再多说一点当时的情景吗？"
-
 RouteName = Literal[
     "normal_interview",
     "extended_interview",
     "emotional_guidance",
 ]
 
+VALID_STAGE_IDS = {"S1", "S2", "S3", "S4", "S5", "unclear"}
+FORMAL_STAGE_IDS = ("S1", "S2", "S3", "S4", "S5")
+STAGE_NAME_BY_ID = {
+    "S1": "童年时光",
+    "S2": "青春岁月",
+    "S3": "人生转折",
+    "S4": "岁月阅历",
+    "S5": "收尾总结",
+    "unclear": "未识别",
+}
+MAIN_QUESTION_IDS = tuple(range(1, 9))
+SUPPLEMENT_QUESTION_ID = 9
+FOLLOWUP_EXHAUSTED_REPLY = "当前主问题所有追问已完成"
+REPLY_NODE_BY_ROUTE: dict[RouteName, TurnGraphNextNode] = {
+    "normal_interview": "normal_reply",
+    "extended_interview": "extended_reply",
+    "emotional_guidance": "normal_reply",
+}
+ROUND_DECREMENT_BY_ROUTE: dict[RouteName, int] = {
+    "normal_interview": 1,
+    "extended_interview": 0,
+    "emotional_guidance": 1,
+}
+
+MAX_HISTORY_MESSAGES = 8
+MAX_HISTORY_MESSAGE_CHARS = 500
+NORMAL_PROMPT_INPUT_REPLACEMENTS = {
+    "{{历史对话}}": "history",
+    "{{当前阶段描述}}": "stage_description",
+    "{{当前阶段建议剩余轮数}}": "remaining_rounds",
+    "{{当前阶段已问主问题编号}}": "completed_main_question_ids",
+    "{{当前阶段已收集主问题编号}}": "completed_main_question_ids",
+    "{{用户本轮输入}}": "user_message",
+    "{{路由判断结果}}": "route_json",
+}
+NORMAL_INTERVIEW_SECTIONS = (
+    "## 基础提示词",
+    "## 普通轮次节奏提示词",
+    "## 阶段收束提示词",
+    "## 输入区",
+)
+ROUTING_JUDGEMENT_PROMPT = "prompts/routing-judgement.md"
+STAGE_DETECTION_PROMPT = "prompts/stage-detection.md"
+EMOTION_BASE_PROMPT = "prompts/emotion/base.md"
+EMOTION_PROMPT_BY_TYPE = {
+    "none": "prompts/emotion/none.md",
+    "sadness": "prompts/emotion/sadness.md",
+    "regret_self_blame": "prompts/emotion/regret-self-blame.md",
+    "repression_grievance": "prompts/emotion/repression-grievance.md",
+    "anxiety_heavy": "prompts/emotion/anxiety-heavy.md",
+    "loneliness": "prompts/emotion/loneliness.md",
+    "mixed": "prompts/emotion/mixed.md",
+    "unclear": "prompts/emotion/unclear.md",
+}
+
+STAGE_PROMPT_FILES: dict[str, dict[str, str]] = {
+    "S1": {
+        "main_question": "prompts/s1-childhood-main-question.md",
+        "followup": "prompts/s1-childhood-detail-followup.md",
+    },
+    "S2": {
+        "main_question": "prompts/s2-youth-main-question.md",
+        "followup": "prompts/s2-youth-detail-followup.md",
+    },
+    "S3": {
+        "main_question": "prompts/s3-turning-point-main-question.md",
+        "followup": "prompts/s3-turning-point-detail-followup.md",
+    },
+    "S4": {
+        "main_question": "prompts/s4-life-experience-main-question.md",
+        "followup": "prompts/s4-life-experience-detail-followup.md",
+    },
+    "S5": {
+        "main_question": "prompts/s5-closing-main-question.md",
+        "followup": "prompts/s5-closing-detail-followup.md",
+    },
+}
+
+SKILL_DIR = (
+    Path(__file__).resolve().parents[2]
+    / ".codex"
+    / "skills"
+    / "interview-prompt-router-zh"
+)
+SKILL_REFERENCES_DIR = SKILL_DIR / "references"
+
+ICEBREAKER_MESSAGE = (
+    "您好，今天想陪您慢慢聊聊过往的人生故事，咱们就像唠家常一样，"
+    "不用准备，也不用讲得多完整。最先想起的，是哪一段日子呢？"
+)
 
 class InterviewRouteResult(BaseModel):
     route: RouteName = "normal_interview"
     emotion_type: str = "none"
+    needs_emotional_support: bool = False
     confidence: float = 0.0
     reason: str = ""
     should_change_topic: bool = False
     do_not_probe_current_topic: bool = False
     round_decrement: int = Field(default=1, ge=0, le=1)
-    detected_stage: str = "unclear"
-    stage_shift_reason: str = ""
-    skip_completed_stages: bool = False
+
+
+class InterviewStageDetectionResult(BaseModel):
+    stage_code: str = "unclear"
+    stage_name: str = "未识别"
+    judgment_reason: str = ""
 
 
 class InterviewTurnResult(BaseModel):
     reply: str
     route: InterviewRouteResult
-    response_source: Literal["llm", "fallback"] = "fallback"
+    response_source: Literal["llm"] = "llm"
+    main_question_id: int | None = Field(default=None, ge=1, le=9)
+
+
+class InterviewReplyResult(BaseModel):
+    reply: str
+    main_question_id: int | None = Field(default=None, ge=1, le=9)
 
 
 class InterviewOpeningResult(BaseModel):
     reply: str
-    response_source: Literal["llm", "fallback"] = "fallback"
+    response_source: Literal["none"] = "none"
+
+
+class InterviewTurnGraphState(TypedDict, total=False):
+    user_message: str
+    recent_messages: list[dict[str, str]]
+    stage_description: str
+    remaining_rounds: int
+    completed_main_question_ids: list[int]
+    route: InterviewRouteResult
+    reply: str
+    response_source: Literal["llm"]
+    main_question_id: int | None
 
 
 class InterviewAgentService:
+    def __init__(self) -> None:
+        self._turn_graph = self._build_turn_graph()
+
     async def generate_icebreaker(
         self,
         *,
@@ -123,7 +167,7 @@ class InterviewAgentService:
         stage_description: str,
     ) -> InterviewOpeningResult:
         with perf_span("interview.icebreaker.total", history=len(recent_messages)):
-            return InterviewOpeningResult(reply=ICEBREAKER_FALLBACK, response_source="fallback")
+            return InterviewOpeningResult(reply=ICEBREAKER_MESSAGE, response_source="none")
 
     async def generate_turn(
         self,
@@ -132,27 +176,152 @@ class InterviewAgentService:
         recent_messages: list[dict[str, str]],
         stage_description: str,
         remaining_rounds: int,
+        completed_main_question_ids: list[int] | None = None,
     ) -> InterviewTurnResult:
         with perf_span("interview.turn.total", chars=len(user_message), history=len(recent_messages)):
-            if not settings.dashscope_api_key:
-                route = self._fallback_route(user_message, remaining_rounds)
-                route = self._apply_stage_route_rules(route, stage_description)
-                return InterviewTurnResult(
-                    reply=self._fallback_reply(route, stage_description, user_message),
-                    route=route,
-                    response_source="fallback",
-                )
-
-            route = await self._judge_route(user_message, recent_messages, remaining_rounds)
-            route = self._apply_stage_route_rules(route, stage_description)
-            reply = await self._generate_reply(
-                route=route,
-                user_message=user_message,
-                recent_messages=recent_messages,
-                stage_description=stage_description,
-                remaining_rounds=remaining_rounds,
+            state = await self._turn_graph.ainvoke(
+                {
+                    "user_message": user_message,
+                    "recent_messages": recent_messages,
+                    "stage_description": stage_description,
+                    "remaining_rounds": remaining_rounds,
+                    "completed_main_question_ids": completed_main_question_ids or [],
+                }
             )
-            return InterviewTurnResult(reply=reply, route=route, response_source="llm")
+            return InterviewTurnResult(
+                reply=state["reply"],
+                route=state["route"],
+                response_source=state.get("response_source", "llm"),
+                main_question_id=state.get("main_question_id"),
+            )
+
+    async def judge_turn_route(
+        self,
+        *,
+        user_message: str,
+        recent_messages: list[dict[str, str]],
+        stage_description: str,
+        remaining_rounds: int,
+    ) -> InterviewRouteResult:
+        state = await self._route_turn(
+            {
+                "user_message": user_message,
+                "recent_messages": recent_messages,
+                "stage_description": stage_description,
+                "remaining_rounds": remaining_rounds,
+            }
+        )
+        return state["route"]
+
+    async def detect_user_stage(self, *, user_message: str) -> InterviewStageDetectionResult:
+        prompt = self._extract_text_block(self._load_skill_prompt(STAGE_DETECTION_PROMPT))
+        prompt = prompt.replace("{{用户文本}}", user_message)
+        with perf_span("llm.interview.stage_detection", model=interview_llm.model, chars=len(user_message)):
+            raw = await asyncio.to_thread(
+                interview_llm.chat,
+                "你只输出严格 JSON，不输出 Markdown。",
+                prompt,
+                temperature=0.1,
+                max_tokens=256,
+            )
+        return self._parse_stage_detection(raw)
+
+    async def generate_reply_for_route(
+        self,
+        *,
+        route: InterviewRouteResult,
+        user_message: str,
+        recent_messages: list[dict[str, str]],
+        stage_description: str,
+        remaining_rounds: int,
+        completed_main_question_ids: list[int] | None = None,
+    ) -> tuple[str, Literal["llm"], int | None]:
+        route = self._normalize_active_route(route)
+        state: InterviewTurnGraphState = {
+            "route": route,
+            "user_message": user_message,
+            "recent_messages": recent_messages,
+            "stage_description": stage_description,
+            "remaining_rounds": remaining_rounds,
+            "completed_main_question_ids": completed_main_question_ids or [],
+            "response_source": "llm",
+        }
+        result = await self._reply_handlers()[self._select_reply_node(state)](state)
+        if route.route == "extended_interview" and result["reply"].strip() == FOLLOWUP_EXHAUSTED_REPLY:
+            normal_route = route.model_copy(update={"route": "normal_interview", "round_decrement": 1})
+            state["route"] = normal_route
+            result = await self._normal_reply_turn(state)
+        return result["reply"], result.get("response_source", "llm"), result.get("main_question_id")
+
+    def _reply_handlers(self) -> dict[TurnGraphNextNode, Any]:
+        return {
+            "normal_reply": self._normal_reply_turn,
+            "extended_reply": self._extended_reply_turn,
+        }
+
+    async def _llm_route_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
+        route = await self._judge_route(
+            state["user_message"],
+            state["recent_messages"],
+            state["remaining_rounds"],
+        )
+        return {
+            "route": self._apply_stage_route_rules(route, state["stage_description"]),
+            "response_source": "llm",
+        }
+
+    def _build_turn_graph(self) -> Any:
+        graph = StateGraph(InterviewTurnGraphState)
+        graph.add_node("route", self._route_turn)
+        graph.add_node("normal_reply", self._normal_reply_turn)
+        graph.add_node("extended_reply", self._extended_reply_turn)
+        graph.set_entry_point("route")
+        graph.add_conditional_edges(
+            "route",
+            self._select_reply_node,
+            {
+                "normal_reply": "normal_reply",
+                "extended_reply": "extended_reply",
+            },
+        )
+        graph.add_edge("normal_reply", END)
+        graph.add_edge("extended_reply", END)
+        return graph.compile()
+
+    async def _route_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
+        return await self._llm_route_turn(state)
+
+    @staticmethod
+    def _select_reply_node(state: InterviewTurnGraphState) -> TurnGraphNextNode:
+        return REPLY_NODE_BY_ROUTE[state["route"].route]
+
+    async def _normal_reply_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
+        return await self._llm_reply_turn(state)
+
+    async def _extended_reply_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
+        return await self._llm_reply_turn(state)
+
+    async def _llm_reply_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
+        route = state["route"]
+        user_message = state["user_message"]
+        recent_messages = state["recent_messages"]
+        stage_description = state["stage_description"]
+        remaining_rounds = state["remaining_rounds"]
+        completed_main_question_ids = state.get("completed_main_question_ids", [])
+
+        result = await self._generate_reply(
+            route=route,
+            user_message=user_message,
+            recent_messages=recent_messages,
+            stage_description=stage_description,
+            remaining_rounds=remaining_rounds,
+            completed_main_question_ids=completed_main_question_ids,
+        )
+        return {
+            "reply": result.reply,
+            "response_source": "llm",
+            "main_question_id": result.main_question_id,
+        }
 
     async def _judge_route(
         self,
@@ -160,25 +329,21 @@ class InterviewAgentService:
         recent_messages: list[dict[str, str]],
         remaining_rounds: int,
     ) -> InterviewRouteResult:
-        prompt = self._extract_text_block(self._load_skill_prompt("routing-judgement-prompt.md"))
+        prompt = self._extract_text_block(self._load_skill_prompt(ROUTING_JUDGEMENT_PROMPT))
         prompt = (
             prompt.replace("{{历史对话}}", self._format_history(recent_messages))
             .replace("{{当前阶段建议剩余轮数}}", str(max(0, remaining_rounds)))
             .replace("{{用户本轮回复}}", user_message)
         )
-        try:
-            with perf_span("llm.interview.route", model=interview_llm.model, chars=len(user_message)):
-                raw = await asyncio.to_thread(
-                    interview_llm.chat,
-                    "你只输出严格 JSON，不输出 Markdown。",
-                    prompt,
-                    temperature=0.2,
-                    max_tokens=512,
-                )
-            return self._parse_route(raw, user_message, remaining_rounds)
-        except Exception as exc:
-            logger.warning("LLM 采访路由失败 model=%s error=%s", interview_llm.model, exc)
-            return self._fallback_route(user_message, remaining_rounds)
+        with perf_span("llm.interview.route", model=interview_llm.model, chars=len(user_message)):
+            raw = await asyncio.to_thread(
+                interview_llm.chat,
+                "你只输出严格 JSON，不输出 Markdown。",
+                prompt,
+                temperature=0.2,
+                max_tokens=512,
+            )
+        return self._parse_route(raw)
 
     async def _generate_reply(
         self,
@@ -188,26 +353,32 @@ class InterviewAgentService:
         recent_messages: list[dict[str, str]],
         stage_description: str,
         remaining_rounds: int,
-    ) -> str:
-        prompt = self._build_reply_prompt(route, user_message, recent_messages, stage_description, remaining_rounds)
-        try:
-            with perf_span(
-                "llm.interview.reply",
-                model=interview_llm.model,
-                route=route.route,
-                chars=len(user_message),
-            ):
-                raw = await asyncio.to_thread(
-                    interview_llm.chat,
-                    "你是一位温和的纪实采访者。只输出一句以“采：”开头的采访话术。",
-                    prompt,
-                    temperature=0.7,
-                    max_tokens=512,
-                )
-            return self._normalize_reply(raw)
-        except Exception as exc:
-            logger.warning("LLM 采访回复失败 model=%s route=%s error=%s", interview_llm.model, route.route, exc)
-            return self._fallback_reply(route, stage_description, user_message)
+        completed_main_question_ids: list[int],
+    ) -> InterviewReplyResult:
+        prompt = self._build_reply_prompt(
+            route,
+            user_message,
+            recent_messages,
+            stage_description,
+            remaining_rounds,
+            completed_main_question_ids,
+        )
+        with perf_span(
+            "llm.interview.reply",
+            model=interview_llm.model,
+            route=route.route,
+            chars=len(user_message),
+        ):
+            raw = await asyncio.to_thread(
+                interview_llm.chat,
+                self._reply_system_prompt(route),
+                prompt,
+                temperature=0.7,
+                max_tokens=512,
+            )
+        if route.route == "normal_interview":
+            return self._parse_main_question_reply(raw, allow_supplement=remaining_rounds == 0)
+        return InterviewReplyResult(reply=self._normalize_reply(raw))
 
     def _build_reply_prompt(
         self,
@@ -216,257 +387,193 @@ class InterviewAgentService:
         recent_messages: list[dict[str, str]],
         stage_description: str,
         remaining_rounds: int,
+        completed_main_question_ids: list[int] | None = None,
     ) -> str:
-        if route.route in {"normal_interview", "extended_interview"}:
-            prompt = self._build_normal_interview_prompt(route, remaining_rounds)
-            return (
-                prompt.replace("{{历史对话}}", self._format_history(recent_messages))
-                .replace("{{当前阶段描述}}", stage_description)
-                .replace("{{当前阶段建议剩余轮数}}", str(max(0, remaining_rounds)))
-                .replace("{{用户本轮输入}}", user_message)
-                .replace("{{路由判断结果}}", route.model_dump_json(ensure_ascii=False))
-            )
+        completed_ids = self._valid_main_question_ids(completed_main_question_ids or [])
+        values = {
+            "history": self._format_history(recent_messages, limit=None),
+            "stage_description": stage_description,
+            "remaining_rounds": str(max(0, remaining_rounds)),
+            "completed_main_question_ids": self._format_main_question_ids(completed_ids),
+            "user_message": user_message,
+            "route_json": route.model_dump_json(ensure_ascii=False),
+        }
+        stage_id = self._stage_id_from_description(stage_description)
+        prompt_builders = {
+            "normal_interview": lambda: (
+                self._build_main_question_prompt(
+                    self._prompt_file_for_stage(stage_id, "main_question"),
+                    remaining_rounds,
+                ),
+                NORMAL_PROMPT_INPUT_REPLACEMENTS,
+            ),
+            "extended_interview": lambda: (
+                self._extract_text_block(
+                    self._load_skill_prompt(
+                        self._prompt_file_for_stage(stage_id, "followup")
+                    )
+                ),
+                NORMAL_PROMPT_INPUT_REPLACEMENTS,
+            ),
+        }
+        prompt, replacements = prompt_builders[route.route]()
+        prompt = self._append_emotional_support_prompt(prompt, route)
+        return self._fill_prompt(prompt, replacements, values)
 
-        prompt = self._extract_text_block(self._load_skill_prompt("emotional-support-prompt.md"))
-        return (
-            prompt.replace("{{历史对话}}", self._format_history(recent_messages))
-            .replace("{{当前阶段描述}}", stage_description)
-            .replace("{{用户本轮回复}}", user_message)
-            .replace("{{路由判断结果}}", route.model_dump_json(ensure_ascii=False))
+    def _build_main_question_prompt(self, prompt_name: str, remaining_rounds: int) -> str:
+        doc = self._load_skill_prompt(prompt_name)
+        if not all(title in doc for title in NORMAL_INTERVIEW_SECTIONS):
+            return self._extract_text_block(doc)
+        base, normal, low_round, input_block = (
+            self._section_code_block(doc, title) for title in NORMAL_INTERVIEW_SECTIONS
         )
-
-    def _build_normal_interview_prompt(self, route: InterviewRouteResult, remaining_rounds: int) -> str:
-        if route.route == "extended_interview":
-            return self._extract_text_block(self._load_skill_prompt("detail-followup-prompt.md"))
-
-        doc = self._load_skill_prompt("normal-interview-prompt.md")
-        base = self._section_code_block(doc, "## 基础提示词")
-        normal = self._section_code_block(doc, "## 普通轮次节奏提示词")
-        low_round = self._section_code_block(doc, "## 阶段收束提示词")
-        input_block = self._section_code_block(doc, "## 输入区")
         rhythm = normal if remaining_rounds > 1 else low_round
         return "\n\n".join([base, rhythm, input_block])
 
     @staticmethod
-    def _parse_route(raw: str, user_message: str, remaining_rounds: int) -> InterviewRouteResult:
-        text = raw.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?", "", text, flags=re.I).strip()
-            text = re.sub(r"```$", "", text).strip()
+    def _reply_system_prompt(route: InterviewRouteResult) -> str:
+        if route.route == "normal_interview":
+            return (
+                "你是一位温和的纪实采访者。只输出严格 JSON，不输出 Markdown。"
+                "JSON 必须包含 question_id 和 question；question_id 是 1 到 8 的整数，"
+                "只有当前阶段 8 个主问题都已完成时才允许输出 9。"
+            )
+        return "你是一位温和的纪实采访者。只输出一句采访话术，不要添加“采：”或任何说话人前缀。"
+
+    @staticmethod
+    def _parse_main_question_reply(raw: str, *, allow_supplement: bool = False) -> InterviewReplyResult:
+        data: dict[str, Any] = json.loads(raw.strip())
+        reply = data.get("reply", data.get("question"))
+        raw_question_id = data.get("question_id", data.get("question_number", data.get("main_question_id")))
+        if not isinstance(reply, str) or not reply.strip():
+            raise ValueError("Main question reply JSON must include a non-empty reply/question string.")
+        if isinstance(raw_question_id, bool):
+            raise ValueError("Main question id must be an integer from 1 to 8, or 9 in supplement mode.")
         try:
-            data: dict[str, Any] = json.loads(text)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", text, re.S)
-            data = json.loads(match.group(0)) if match else {}
-        try:
-            route = InterviewRouteResult.model_validate(data)
-        except Exception:
-            route = InterviewAgentService._fallback_route(user_message, remaining_rounds)
-        if route.detected_stage not in {"S1", "S2", "S3", "S4", "S5", "unclear"}:
-            route.detected_stage = "unclear"
-        local_stage = InterviewAgentService._detect_stage(user_message)
-        if local_stage != "unclear" and route.detected_stage != local_stage:
-            route.detected_stage = local_stage
-        if route.route == "extended_interview":
-            route.round_decrement = 0
-        elif route.route == "normal_interview":
-            route.round_decrement = 1
-        elif route.route == "emotional_guidance":
-            low_or_resistant = InterviewAgentService._is_low_engagement_or_resistant(user_message)
-            emotional_content = InterviewAgentService._has_emotional_content(user_message)
-            route.round_decrement = 1 if low_or_resistant or emotional_content or route.round_decrement == 1 else 0
-        route.round_decrement = 0 if route.round_decrement == 0 else 1
+            question_id = int(raw_question_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Main question id must be an integer from 1 to 8, or 9 in supplement mode.") from exc
+        if allow_supplement and question_id == SUPPLEMENT_QUESTION_ID:
+            return InterviewReplyResult(
+                reply=InterviewAgentService._normalize_reply(reply),
+                main_question_id=SUPPLEMENT_QUESTION_ID,
+            )
+        if question_id not in MAIN_QUESTION_IDS:
+            raise ValueError("Main question id must be an integer from 1 to 8, or 9 in supplement mode.")
+        return InterviewReplyResult(reply=InterviewAgentService._normalize_reply(reply), main_question_id=question_id)
+
+    @staticmethod
+    def _parse_route(raw: str) -> InterviewRouteResult:
+        data: dict[str, Any] = json.loads(raw.strip())
+        route = InterviewRouteResult.model_validate(data)
+        route = InterviewAgentService._normalize_active_route(route)
+        route.needs_emotional_support = InterviewAgentService._route_needs_emotional_support(route)
+        route.round_decrement = ROUND_DECREMENT_BY_ROUTE[route.route]
         return route
 
     @staticmethod
-    def _fallback_route(user_message: str, remaining_rounds: int) -> InterviewRouteResult:
-        text = user_message.strip()
-        if any(word in text for word in RESISTANCE_WORDS):
-            return InterviewRouteResult(
-                route="emotional_guidance",
-                emotion_type="mixed",
-                confidence=0.7,
-                reason="用户文字中出现明确回避或终止当前话题的表达。",
-                should_change_topic=True,
-                do_not_probe_current_topic=True,
-                round_decrement=1,
-                stage_shift_reason="用户抵触当前扩展话题，建议停止该支线并回到当前阶段尚未完成的主问题。",
-                skip_completed_stages=False,
-            )
-        if len(text) <= 8 or any(word in text for word in LOW_ENGAGEMENT_WORDS):
-            return InterviewRouteResult(
-                route="emotional_guidance",
-                emotion_type="unclear",
-                confidence=0.6,
-                reason="用户回复较短或表示记不清，适合降低压力。",
-                should_change_topic=True,
-                do_not_probe_current_topic=False,
-                round_decrement=1,
-                stage_shift_reason="用户回复较短或记不清，建议降低压力并回到当前阶段尚未完成的主问题。",
-                skip_completed_stages=False,
-            )
-        if any(word in text for word in STRONG_EMOTION_WORDS):
-            return InterviewRouteResult(
-                route="emotional_guidance",
-                emotion_type="mixed",
-                confidence=0.7,
-                reason="用户文字中出现明显负面情绪负担，适合先安抚再回到轻松方向。",
-                should_change_topic=True,
-                do_not_probe_current_topic=True,
-                round_decrement=1,
-            )
-        if any(word in text for word in MILD_EMOTION_WORDS):
-            return InterviewRouteResult(
-                route="emotional_guidance",
-                emotion_type="sadness",
-                confidence=0.65,
-                reason="用户文字中出现轻度感慨或怀念，适合轻轻共情后继续低压力追问。",
-                should_change_topic=False,
-                do_not_probe_current_topic=False,
-                round_decrement=1,
-            )
-        if InterviewAgentService._is_high_engagement_followup_candidate(text):
-            return InterviewRouteResult(
-                route="extended_interview",
-                emotion_type="none",
-                confidence=0.55,
-                reason="用户回复包含可扩展传记素材，适合单步试探追问。",
-                should_change_topic=False,
-                do_not_probe_current_topic=False,
-                round_decrement=0,
-                detected_stage=InterviewAgentService._detect_stage(text),
-            )
-        return InterviewRouteResult(
-            route="normal_interview",
-            emotion_type="none",
-            confidence=0.5,
-            reason="用户回复可继续按主流程推进。",
-            should_change_topic=False,
-            do_not_probe_current_topic=False,
-            round_decrement=1,
-            detected_stage=InterviewAgentService._detect_stage(text),
-        )
-
-    @staticmethod
-    def _is_high_engagement_followup_candidate(user_message: str) -> bool:
-        text = user_message.strip()
-        if any(word in text for word in RESISTANCE_WORDS):
-            return False
-        if any(word in text for word in LOW_ENGAGEMENT_WORDS):
-            return False
-        if InterviewAgentService._has_relationship_support_material(text):
-            return True
-        marker_count = sum(1 for marker in HIGH_ENGAGEMENT_MARKERS if marker in text)
-        if marker_count >= 1:
-            return True
-        if len(text) < HIGH_ENGAGEMENT_MIN_CHARS:
-            return False
-        sentence_breaks = sum(text.count(mark) for mark in ("，", "。", "；", ",", ".", ";"))
-        return len(text) >= 80 and sentence_breaks >= 2
-
-    @staticmethod
-    def _has_relationship_support_material(user_message: str) -> bool:
-        text = user_message.strip()
-        return any(person in text for person in RELATION_SUPPORT_MARKERS) and any(
-            action in text for action in SUPPORT_ACTION_MARKERS
-        )
-
-    @staticmethod
-    def _is_low_engagement_or_resistant(user_message: str) -> bool:
-        text = user_message.strip()
-        return len(text) <= 8 or any(word in text for word in RESISTANCE_WORDS + LOW_ENGAGEMENT_WORDS)
-
-    @staticmethod
-    def _is_resistant(user_message: str) -> bool:
-        text = user_message.strip()
-        return any(word in text for word in RESISTANCE_WORDS)
-
-    @staticmethod
-    def _has_emotional_content(user_message: str) -> bool:
-        text = user_message.strip()
-        return any(word in text for word in MILD_EMOTION_WORDS + STRONG_EMOTION_WORDS)
-
-    @staticmethod
-    def _detect_stage(user_message: str) -> str:
-        text = user_message.strip()
-        if not text:
-            return "unclear"
-
-        def has_any(words: list[str]) -> bool:
-            return any(word in text for word in words)
-
-        age_matches = [int(match) for match in re.findall(r"(?<!\d)(\d{1,2})\s*岁", text)]
-        mentions_child_age = any(age <= 12 for age in age_matches) or has_any(
-            ["十二岁以前", "12岁以前", "上小学", "小学时候", "小学那会", "小学那阵", "小学", "小时候", "童年", "儿时", "孩提"]
-        )
-        mentions_work = has_any(
-            ["打工", "上班", "工作", "做工", "进厂", "工厂", "车间", "外出务工", "外地务工", "外出打工", "外地打工", "深圳", "广东", "南下"]
-        )
-        mentions_family_responsibility = has_any(
-            ["结婚", "成家", "婚后", "生子", "孩子出生", "养孩子", "养家", "供孩子", "家庭责任", "责任", "一家人", "搬家", "买房"]
-        )
-
-        if has_any(["这一生", "一辈子", "人生道理", "留给", "最后的话", "回头看这一生", "总结一下", "遗憾", "感谢"]):
-            return "S5"
-        if has_any(["退休", "晚年", "孙子", "孙女", "外孙", "外孙女", "老了以后", "现在生活", "如今生活", "身体"]):
-            return "S4"
-        if mentions_family_responsibility:
-            return "S3"
-        if mentions_work:
-            return "S2"
-        if has_any(["上学", "读书", "离家", "年轻", "年轻时", "青春", "学徒", "参军", "初入社会", "朋友", "理想"]):
-            return "S2"
-        if mentions_child_age or (
-            has_any(["出生", "父母", "兄弟", "姐妹", "家里条件", "玩伴"])
-            and has_any(["小时候", "童年", "儿时", "小学", "那时年纪小", "小时"])
-        ):
-            return "S1"
-        return "unclear"
-
-    @staticmethod
-    def _fallback_reply(route: InterviewRouteResult, stage_description: str = "", user_message: str = "") -> str:
-        if "本轮采访任务：最终收尾" in stage_description:
-            return "采：谢谢您愿意把这些人生经历慢慢讲给我听，这些故事都很珍贵，今天的采访就先到这里。"
-        if route.route == "emotional_guidance" and InterviewAgentService._is_resistant(user_message):
-            return f"采：好的，您不想再提这段，我尊重您的想法，咱们就不顺着这里深聊了。{InterviewAgentService._fallback_main_question(stage_description)}"
-        if route.route == "emotional_guidance" and InterviewAgentService._is_low_engagement_or_resistant(user_message):
-            return f"采：没关系，您现在想不起来，咱们就不勉强这段了。{InterviewAgentService._fallback_main_question(stage_description)}"
+    def _normalize_active_route(route: InterviewRouteResult) -> InterviewRouteResult:
         if route.route == "emotional_guidance":
-            return f"采：能感受到这段经历让您有些沉重，咱们不深挖难受的地方。{InterviewAgentService._fallback_main_question(stage_description)}"
-        if route.route == "extended_interview":
-            return "采：您刚提到的这个点挺有故事感的。那件事后来对您有什么影响，或者让您一直记到现在的是什么？"
-        if "本轮采访任务：日常主线与关键事件" in stage_description:
-            return "采：您刚才说的这些，让那段日子的轮廓清楚了一些。那平日里您主要都在忙些什么？"
-        if "本轮采访任务：人际联结" in stage_description:
-            return "采：您刚才讲到的那段经历里，身边的人应该也很重要。那时候陪在您身边、或者和您一起撑着往前走的，主要是哪些人呢？"
-        if "本轮采访任务：心境得失" in stage_description:
-            return "采：您刚才说的这些，听起来确实是一段会留下痕迹的日子。回头看，它给您留下最大的收获、改变，或者最深的感触是什么？"
-        if "本轮采访任务：阶段收束与下一阶段开启" in stage_description:
-            return "采：这段经历先聊到这里，已经能看见当时的大致样子了。往后走到下一段日子时，您的生活环境和处境又变成了什么样？"
-        return INTERVIEW_FALLBACK
+            route = route.model_copy(
+                update={
+                    "route": "normal_interview",
+                    "needs_emotional_support": True,
+                }
+            )
+        return route
 
     @staticmethod
-    def _fallback_main_question(stage_description: str) -> str:
-        if "本轮采访任务：环境与处境" in stage_description:
-            return "换个轻一点的角度说说，那段时期您的生活环境和处境大概是什么样的？"
-        if "本轮采访任务：日常主线" in stage_description:
-            return "那段时期平日里主要是怎么过的，每天最常忙些什么？"
-        if "本轮采访任务：关键事件" in stage_description:
-            return "这段时期里，有没有一件比较有代表性的事，让您到现在还记得？"
-        if "本轮采访任务：人际与心境" in stage_description:
-            return "那时候身边对您比较重要的人是谁，这段经历后来给您留下了什么影响？"
-        return "换个轻一点的角度说说，这段日子里还有哪些您愿意提一提的事情？"
+    def _route_needs_emotional_support(route: InterviewRouteResult) -> bool:
+        if route.needs_emotional_support:
+            return True
+        if route.emotion_type and route.emotion_type != "none":
+            return True
+        return bool(route.should_change_topic or route.do_not_probe_current_topic)
+
+    @staticmethod
+    def _append_emotional_support_prompt(prompt: str, route: InterviewRouteResult) -> str:
+        if not route.needs_emotional_support:
+            return prompt
+        base_prompt = InterviewAgentService._extract_text_block(
+            InterviewAgentService._load_skill_prompt(EMOTION_BASE_PROMPT)
+        )
+        emotion_prompt = InterviewAgentService._extract_text_block(
+            InterviewAgentService._load_skill_prompt(
+                InterviewAgentService._emotion_prompt_for_type(route.emotion_type)
+            )
+        )
+        return "\n\n".join(
+            [
+                prompt,
+                "## 情绪安慰融合规则",
+                "以下规则仅用于把轻量安慰融合进当前采访或扩展追问中，不启用独立情绪疏导路线。",
+                "必须保持当前提示词原本的输出格式：",
+                "- 当前是 normal_interview 时，仍然只输出包含 question_id 和 question 的 JSON；把安慰放进 question 字段的开头承接里。",
+                "- 当前是 extended_interview 时，仍然只输出一句采访话术；先安慰，再围绕当前素材问一个低压力开放问题。",
+                "不要输出“情绪疏导、路由、策略”等内部词。",
+                base_prompt,
+                "## 针对性情绪规则",
+                emotion_prompt,
+            ]
+        )
+
+    @staticmethod
+    def _emotion_prompt_for_type(emotion_type: str) -> str:
+        return EMOTION_PROMPT_BY_TYPE.get(emotion_type, EMOTION_PROMPT_BY_TYPE["unclear"])
+
+    @staticmethod
+    def _parse_stage_detection(raw: str) -> InterviewStageDetectionResult:
+        data: dict[str, Any] = json.loads(raw.strip())
+        result = InterviewStageDetectionResult.model_validate(data)
+        result.stage_code = result.stage_code if result.stage_code in VALID_STAGE_IDS else "unclear"
+        result.stage_name = STAGE_NAME_BY_ID[result.stage_code]
+        result.judgment_reason = result.judgment_reason.strip()[:80]
+        return result
 
     @staticmethod
     def _apply_stage_route_rules(route: InterviewRouteResult, stage_description: str) -> InterviewRouteResult:
         return route
 
     @staticmethod
-    def _format_history(messages: list[dict[str, str]]) -> str:
+    def _stage_id_from_description(stage_description: str) -> str:
+        for stage_id in FORMAL_STAGE_IDS:
+            if f"阶段：{stage_id}" in stage_description:
+                return stage_id
+        return "unclear"
+
+    @staticmethod
+    def _prompt_file_for_stage(stage_id: str, prompt_type: str) -> str:
+        prompt_file = STAGE_PROMPT_FILES.get(stage_id, {}).get(prompt_type)
+        if not prompt_file:
+            raise ValueError(f"Stage prompt not configured: stage={stage_id}, prompt_type={prompt_type}")
+        return prompt_file
+
+    @staticmethod
+    def _valid_main_question_ids(value: list[int]) -> list[int]:
+        result: list[int] = []
+        for item in value:
+            if isinstance(item, bool):
+                continue
+            try:
+                question_id = int(item)
+            except (TypeError, ValueError):
+                continue
+            if question_id in MAIN_QUESTION_IDS and question_id not in result:
+                result.append(question_id)
+        return result
+
+    @staticmethod
+    def _format_main_question_ids(question_ids: list[int]) -> str:
+        ids = InterviewAgentService._valid_main_question_ids(question_ids)
+        return "无" if not ids else "、".join(str(question_id) for question_id in ids)
+
+    @staticmethod
+    def _format_history(messages: list[dict[str, str]], *, limit: int | None = MAX_HISTORY_MESSAGES) -> str:
         if not messages:
             return "暂无历史对话。"
         lines: list[str] = []
-        for msg in messages[-MAX_HISTORY_MESSAGES:]:
+        scoped_messages = messages if limit is None else messages[-limit:]
+        for msg in scoped_messages:
             role = "采" if msg.get("role") == "assistant" else "受"
             content = str(msg.get("content") or "").strip()[:MAX_HISTORY_MESSAGE_CHARS]
             if content:
@@ -476,21 +583,39 @@ class InterviewAgentService:
     @staticmethod
     def _normalize_reply(raw: str) -> str:
         text = raw.strip().strip('"')
-        if not text.startswith("采："):
-            text = f"采：{text}"
+        for prefix in ("采：", "采:", "采访者：", "采访者:", "采访官：", "采访官:"):
+            if text.startswith(prefix):
+                return text[len(prefix) :].strip()
         return text
 
     @staticmethod
+    def _fill_prompt(prompt: str, replacements: dict[str, str], values: dict[str, str]) -> str:
+        for placeholder, value_key in replacements.items():
+            if isinstance(value_key, str) and value_key in values:
+                prompt = prompt.replace(placeholder, values[value_key])
+            else:
+                prompt = prompt.replace(placeholder, str(value_key).format(**values))
+        return prompt
+
+    @staticmethod
     def _load_skill_prompt(name: str) -> str:
-        path = SKILL_REFERENCES_DIR / name
+        raw_path = Path(name)
+        path = raw_path if raw_path.is_absolute() else SKILL_DIR / raw_path
+        if not path.is_file():
+            path = SKILL_REFERENCES_DIR / name
         if not path.is_file():
             raise FileNotFoundError(f"Skill prompt not found: {path}")
         return path.read_text(encoding="utf-8").strip()
 
     @staticmethod
     def _extract_text_block(markdown: str) -> str:
-        match = re.search(r"```text\s*(.*?)```", markdown, re.S)
-        return match.group(1).strip() if match else markdown.strip()
+        marker = "```text"
+        if marker not in markdown:
+            return markdown.strip()
+        tail = markdown.split(marker, 1)[1]
+        if "```" not in tail:
+            return tail.strip()
+        return tail.split("```", 1)[0].strip()
 
     @staticmethod
     def _section_code_block(markdown: str, section_title: str) -> str:
@@ -498,7 +623,7 @@ class InterviewAgentService:
         if start < 0:
             raise ValueError(f"Section not found: {section_title}")
         tail = markdown[start:]
-        match = re.search(r"```text\s*(.*?)```", tail, re.S)
-        if not match:
+        block = InterviewAgentService._extract_text_block(tail)
+        if block == tail.strip():
             raise ValueError(f"Text block not found in section: {section_title}")
-        return match.group(1).strip()
+        return block

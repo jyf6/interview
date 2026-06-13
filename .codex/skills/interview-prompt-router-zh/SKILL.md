@@ -1,27 +1,28 @@
----
+﻿---
 name: interview-prompt-router-zh
-description: 中文采访提示词路由与回复生成技能。用于人生访谈、口述史、回忆录、用户研究、心理陪伴边界内的访谈或资料采集场景；当模型需要先判断用户应走正常采访、扩展采访或情绪疏导，再生成下一句用户可见回复时使用。
+description: 中文采访提示词路由与回复生成技能。用于人生访谈、口述史、回忆录、用户研究、心理陪伴边界内的访谈或资料采集场景；当模型需要先判断用户应走正常采访或扩展采访，并按需把轻量情绪安慰融合进下一句用户可见回复时使用。
 ---
 
 # 采访提示词路由器
 
 ## 概述
 
-这个技能采用“先路由、再生成”的两步流程。它不是把所有规则塞进同一个提示词，而是先用独立路由提示词判断当前用户状态，再根据路由结果选择正常采访或情绪疏导生成。
+这个技能采用“先路由、再生成”的两步流程。它不是把所有规则塞进同一个提示词，而是先用独立路由提示词判断当前用户状态，再根据路由结果选择正常采访或扩展追问生成。情绪安慰不再作为独立路由，只由路由结果中的 `needs_emotional_support` 字段控制是否融合进当前采访话术。
 
 可选路线：
 
 - `normal_interview`：按当前阶段主流程提出下一个主问题。
 - `extended_interview`：用户回复出现可扩展传记素材，围绕该素材单步试探追问。
-- `emotional_guidance`：用户出现情绪负担、抵触、敷衍、记不清或积极性下降，由情绪疏导提示词区分具体处理方式。
+- `emotional_guidance`：不启用。历史兼容场景下若模型输出该路由，宿主代码会归一化为 `normal_interview`，并设置 `needs_emotional_support=true`。
 
 引用文件：
 
-- `references/routing-judgement-prompt.md`：独立路由判断提示词，只输出 JSON，并返回 `round_decrement` 告诉代码本轮是否消耗一次代码预设的阶段主问题次数，或应该继续扩展/安抚而暂不推进主流程。
-- `references/normal-interview-prompt.md`：正常流程提问提示词，只围绕代码给定的阶段主线和本轮关键问题推进计划流程；不做扩展追问。
-- `references/detail-followup-prompt.md`：扩展追问提示词，只在路由判断需要暂不扣减主问题次数时使用，围绕用户刚出现的可扩展素材单步试探追问。
-- `references/emotional-support-prompt.md`：情绪疏导生成提示词，根据路由结果生成一句话。
-- `references/routing-examples.md`：路由和回复示例，用于校准边界。
+- `prompts/routing-judgement.md`：独立路由判断提示词，只输出 JSON，判断本轮应走正常采访还是扩展追问，并输出 `needs_emotional_support`。
+- `prompts/stage-detection.md`：独立阶段识别提示词，只输出 JSON，用于第一次正式输入的起点阶段判断，以及后续记录用户提到过的其他阶段。
+- `prompts/s*-*-main-question.md`：各阶段正常流程提问提示词，只围绕当前阶段主线生成主问题，并输出本轮主问题编号。
+- `prompts/s*-*-detail-followup.md`：各阶段扩展追问提示词，只在 route=extended_interview 时使用，围绕用户刚出现的可扩展素材单步试探追问。
+- `prompts/emotion/base.md`：情绪安慰通用融合规则。仅当 `needs_emotional_support=true` 时由宿主代码拼接到当前生成提示词中，只覆盖历史承接/过渡语写法，不单独生成回复。
+- `prompts/emotion/<emotion-type>.md`：针对 `emotion_type` 的专项安慰规则，例如 `anxiety-heavy.md`、`sadness.md`。
 
 开场破冰不属于本 skill。点击“开启采访”的卡片由产品流程单独触发开场，不进入本路由技能，也不作为正式采访阶段融合进采访技能。
 
@@ -29,20 +30,21 @@ description: 中文采访提示词路由与回复生成技能。用于人生访�
 
 每次使用这个技能时，必须先完成路由判断，再生成回复：
 
-1. 使用 `references/routing-judgement-prompt.md`，根据历史对话、当前阶段建议剩余轮数和用户本轮回复输出路由 JSON。
-2. 如果 `route = normal_interview`，使用 `references/normal-interview-prompt.md` 生成正常流程提问。
-3. 如果 `route = extended_interview`，使用 `references/detail-followup-prompt.md` 生成扩展追问。
-4. 如果 `route = emotional_guidance`，使用 `references/emotional-support-prompt.md` 生成疏导引导话术。
-5. 将路由 JSON 中的 `round_decrement` 交给宿主代码使用：`1` 表示本轮应该回到或推进一次计划内主流程提问，`0` 表示本轮用于扩展追问或情绪安抚，暂不扣减主问题次数。
-6. 最终给用户的回复只输出一句用户可见话术，不输出路由、分析、解释或 JSON，除非开发者明确要求调试输出。
+1. 使用 `prompts/routing-judgement.md`，根据历史对话、当前阶段建议剩余轮数和用户本轮回复输出路由 JSON，其中 `route` 只能选择 `normal_interview` 或 `extended_interview`，`needs_emotional_support` 表示是否需要把安慰融合进生成话术。
+2. 使用 `prompts/stage-detection.md`，根据用户本轮回复输出阶段识别 JSON；宿主代码用它选择首次起点阶段，并记录后续提到过的阶段。
+3. 如果 `route = normal_interview`，使用当前阶段 `main-question.md` 生成正常流程提问。
+4. 如果 `route = extended_interview`，使用当前阶段 `detail-followup.md` 生成扩展追问。
+5. 当前不启用 `route = emotional_guidance`；模型若输出该路由，宿主代码会归一化为 `normal_interview`，并按 `needs_emotional_support=true` 处理。
+6. 主问题次数由宿主代码根据 route 计算：route=normal_interview 时，在用户回答后扣减一次；route=extended_interview 时不扣减。
+7. 如果 `needs_emotional_support=true`，宿主代码会把 `prompts/emotion/base.md` 和 `emotion_type` 对应的专项规则拼接到当前路线提示词中；情绪规则只覆盖过渡承接方式，最终仍按当前路线输出格式返回。
+8. 最终给用户的回复只输出一句用户可见话术，不输出路由、分析、解释或 JSON，除非开发者明确要求调试输出。
 
 ## 路由优先级
 
 路由判断必须遵循以下优先级：
 
-1. `emotional_guidance`：用户抵触、情绪负担明显、敷衍、短答、记不清或积极性下降时优先进入。
-2. `extended_interview`：用户出现可扩展传记素材且没有情绪/低参与问题时进入。
-3. `normal_interview`：没有扩展素材，也没有情绪/低参与问题时进入。
+1. `extended_interview`：用户出现可扩展传记素材且没有抵触、低参与或明显不想继续当前话题时进入。
+2. `normal_interview`：没有扩展素材，或用户抵触、敷衍、短答、记不清、积极性下降、明显不想继续当前扩展话题时进入。
 
 线上文字窗口不能感知语气、神态、表情或动作。所有判断只能基于文字内容。不要写“听你语气”“看你表情”等表达。
 
@@ -52,7 +54,7 @@ description: 中文采访提示词路由与回复生成技能。用于人生访�
 
 当前仅使用 S1-S5 正式采访阶段：童年时光、青春岁月、人生转折、岁月阅历、收尾总结。状态机按阶段推进，每个正式阶段建议由 4 个计划内主问题组成。用户第一次正式回答会作为起点阶段；该阶段问完后，如果用户过程中提到过其他阶段，优先流转到被提到且尚未采访过的阶段；如果没有提到其他阶段，则按 S1-S5 顺序补齐尚未采访过的阶段，跳过已经采访过的阶段。当前提示词按以下四类主问题理解阶段任务：
 
-阶段切换话术分两种：如果新阶段来自用户上一阶段主动提到的内容，宿主代码会在“阶段切换衔接”中提供该内容，话术应先自然接住再问新阶段主问题；如果新阶段只是按 S1-S5 顺序补齐未采访阶段，“阶段切换衔接”为“无”，话术不要硬接上一段内容，直接柔和开启当前阶段。
+每轮生成都必须读取【当前阶段描述】中的“流程衔接说明/阶段切换衔接”。这部分由宿主代码状态机提供，说明本轮是正式采访开始、当前阶段延续、扩展追问，还是进入新阶段。无论是哪一种状态流转，都要按这条衔接说明先自然接住，再执行当前阶段任务；不要自行推断或编造阶段切换原因。
 
 1. 环境与处境：这段时期的大背景、生活条件、家庭或个人处境。
 2. 日常主线：这段时期平日主要怎么过、主要在忙什么。
@@ -62,7 +64,7 @@ description: 中文采访提示词路由与回复生成技能。用于人生访�
 阶段识别必须按年龄和人生任务判断，不按单个宽泛词硬套：
 - S1 童年时光只适用于明确 12 岁及以下、小时候、童年、儿时、小学、出生环境、儿童玩伴、儿时小事等儿童成长语境。
 - “家里、父母、兄弟姐妹、帮忙”不是 S1 的充分条件；这些词如果出现在成年打工、成家、养家或责任语境里，必须按 S2 或 S3 判断。
-- “深圳打工、外出打工、进厂、上班、第一次外出工作”默认属于 S2 青春岁月/初入社会；如果同时出现结婚后、孩子、养家、供孩子、家庭责任、重大生活压力，则属于 S3 人生转折。
+- “深圳打工、外出打工、进厂、上班、第一次外出工作、练拳、训练、教练、比赛、拳击、搏击、武术、学徒、学艺、东南亚闯荡”默认属于 S2 青春岁月/初入社会；如果同时出现结婚后、孩子、养家、供孩子、家庭责任、重大生活压力，则属于 S3 人生转折。
 
 skill 不需要预判用户是否“有兴趣扩展”。每次用户回答后，只判断本轮回复里是否存在可扩展传记素材。
 
@@ -87,16 +89,9 @@ skill 不需要预判用户是否“有兴趣扩展”。每次用户回答后�
 
 主问题未问完之前不能进行分支切换。用户在扩展支线里出现负面情绪、不愿谈、敷衍、记不清或积极性下降时，只能停止当前扩展支线，并回到当前阶段尚未完成的主问题；不能按 S1-S5 顺序跳到下一阶段。阶段切换只由宿主代码在当前阶段 4 个主问题完成后进行，并由宿主代码跳过已采访阶段。
 
-阶段主问题计数由宿主代码维护，skill 只输出本轮是否建议扣减。
+阶段主问题计数由宿主代码维护，skill 不决定是否扣减次数。代码只在 route=normal_interview 时扣减；route=extended_interview 不扣减。
 
-路由判断必须输出 `round_decrement`：
-
-- `round_decrement = 1`：本轮应该回到或推进一次代码预设的阶段主问题，建议扣减一次。
-- `round_decrement = 0`：本轮用于扩展追问或情绪安抚，建议不扣减主问题次数。
-
-默认输出 `1`。当用户本轮回复出现可扩展传记素材，且适合在当前阶段框架内单步试探追问时，输出 `0`。
-
-`emotional_guidance` 内部的具体情绪、抵触、低参与和阶段引动方式，由情绪疏导提示词根据 `emotion_type`、`should_change_topic` 和 `do_not_probe_current_topic` 区分处理。
+`emotional_guidance` 不启用。情绪相关规则通过 `needs_emotional_support` 融合到 `normal_interview` 或 `extended_interview` 中。
 
 ## 生成规则
 
@@ -117,10 +112,9 @@ skill 不需要预判用户是否“有兴趣扩展”。每次用户回答后�
 - 不切换到新的阶段任务，不补问主流程里的下一个问题。
 - 每次最多问一个开放式问题。
 
-选择 `emotional_guidance` 时：
+当前不选择 `emotional_guidance`。如果用户抵触、敷衍、短答、记不清、积极性下降或出现明显情绪负担，路由仍回到 `normal_interview` 或按素材进入 `extended_interview`，同时用 `needs_emotional_support=true` 让生成提示词轻量安慰、降压承接。
 
-- 使用情绪疏导提示词，不在路由层拆分轻重情绪、抵触或低参与。
-- 明显情绪负担先安抚；抵触时停止当前扩展话题；敷衍、短答、记不清或积极性下降时，降低压力并回到当前阶段尚未完成的主问题。
+情绪安慰融合规则只覆盖“历史承接/过渡语/共情回应”的写法，不改变当前采访任务：`normal_interview` 仍必须输出主问题 JSON，`extended_interview` 仍必须围绕当前素材输出一个扩展追问。
 
 ## 输出模式
 
@@ -131,23 +125,23 @@ skill 不需要预判用户是否“有兴趣扩展”。每次用户回答后�
 ```json
 {
   "route_result": {
-    "route": "emotional_guidance",
+    "route": "normal_interview",
     "emotion_type": "anxiety_heavy",
+    "needs_emotional_support": true,
     "confidence": 0.86,
     "reason": "用户连续提到发愁、压力大和放不下，负面负担明显重于叙事。",
     "should_change_topic": true,
-    "do_not_probe_current_topic": true,
-    "round_decrement": 0
+    "do_not_probe_current_topic": true
   },
-  "selected_prompt": "references/emotional-support-prompt.md",
+  "selected_prompt": "prompts/<stage>-main-question.md + prompts/emotion/base.md + prompts/emotion/anxiety-heavy.md",
   "assistant_reply": "能感受到您心里装着不少牵挂，一直扛着确实会累。咱们先把烦心事放一放，说说平时什么事情能让您稍微放松一些？"
 }
 ```
 
 ## 引用文件使用
 
-- 路由判断只读 `references/routing-judgement-prompt.md`。
-- 正常流程提问只读 `references/normal-interview-prompt.md`。
-- 扩展追问只读 `references/detail-followup-prompt.md`。
-- 疏导生成只读 `references/emotional-support-prompt.md`。
-- 边界不清、需要校准时再读 `references/routing-examples.md`。
+- 路由判断只读 `prompts/routing-judgement.md`。
+- 阶段识别只读 `prompts/stage-detection.md`。
+- 正常流程提问读取 `prompts/s*-*-main-question.md`。
+- 扩展追问读取 `prompts/s*-*-detail-followup.md`。
+- 情绪安慰融合规则 `prompts/emotion/base.md` 和 `prompts/emotion/<emotion-type>.md` 仅在 `needs_emotional_support=true` 时拼接读取，不作为独立路线读取。
