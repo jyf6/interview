@@ -30,12 +30,18 @@ from app.schemas.interview import (
     UserInfoResponse,
 )
 from app.services.dashscope_llm import DashScopeLLM
-from app.services.interview_agent_service import InterviewAgentService
+from app.services.interview_agent_service import InterviewAgentService, InterviewRouteResult
+from app.services.langgraph_redis_checkpoint import RedisCheckpointSaver
 from app.services.opening_service import OpeningService
+from app.prompts.interview_prompts import STAGE_MAIN_QUESTION_IDS
+
+CROSS_STAGE_ROUTE_REASON = "用户本轮提到了其他人生阶段，已记录为待后续展开的线索，本轮回到当前阶段主线。"
 
 VALID_INTERVIEW_STATES = set(get_args(InterviewState))
 MAX_GUIDANCE_ROUNDS = 3
-MAIN_QUESTION_IDS = tuple(range(1, 9))
+MAIN_QUESTION_IDS = tuple(
+    range(1, max(max(ids) for ids in STAGE_MAIN_QUESTION_IDS.values()) + 1)
+)
 INTERVIEW_STAGES = [
     {
         "id": "S1",
@@ -78,12 +84,82 @@ INTERVIEW_STAGES = [
         "followup": "出现可扩展素材时围绕总结、感谢、遗憾、释怀单步扩展；积极性下降时温情收尾。",
     },
 ]
+INTERVIEW_STAGE_OVERRIDES = {
+    "S1": {
+        "rounds": 5,
+        "name": "童年底色",
+        "coverage": "0-12岁家庭环境、父母教育、童年性格、热衷之事、童年重要人物和影响性格价值观的小事。",
+        "boundary": "不追问中学大学、正式工作、创业、职业巅峰、家庭事业取舍和人生传承等后续阶段内容。",
+        "followup": "围绕童年事件和人物单步扩展，重点追问内心感受、认知变化和长期性格影响。",
+    },
+    "S2": {
+        "rounds": 6,
+        "name": "青春启蒙",
+        "coverage": "13-20岁中学到大学阶段的整体印象、人生期待、专业/大学选择、重要师友、自我认知变化和第一次赚钱。",
+        "boundary": "不提前进入正式职业起步、重大职业转折、事业巅峰危机和家庭事业取舍。",
+        "followup": "围绕青春伏笔单步扩展，重点追问三观成型、选择挣扎、精神影响和成年后选择的源头。",
+    },
+    "S3": {
+        "rounds": 6,
+        "name": "事业起步与初心",
+        "coverage": "20-30岁职场前10年的毕业规划、第一份工作、收入状态、行业选择、早年困难、职场贵人和早期成功观。",
+        "boundary": "不提前进入重大破局、事业巅峰低谷和家庭事业长期取舍。",
+        "followup": "围绕职业起步单步扩展，重点追问生存状态、现实冲击、能力破局、初心和职业基因。",
+    },
+    "S4": {
+        "rounds": 6,
+        "name": "关键转折与破局",
+        "coverage": "30-35岁职业成长期的重要职业转折、重大决定、内心挣扎、事业正轨、突破努力、贵人对手和人生意义。",
+        "boundary": "不把普通第一份工作归入本阶段；不把成熟期巅峰危机或家庭亏欠作为主线展开。",
+        "followup": "围绕关键一跃单步扩展，重点追问临界状态、风险评估、破局动作、至暗时刻和格局跃升。",
+    },
+    "S5": {
+        "rounds": 6,
+        "name": "巅峰与至暗",
+        "coverage": "35-45岁职业成熟期的成就感、重大危机、成功荣誉后的心态、成功观变化、低谷支撑和人生道理。",
+        "boundary": "不再展开职业起步和普通转折；家庭陪伴亏欠应记录后交给平衡与取舍阶段。",
+        "followup": "围绕巅峰与低谷单步扩展，重点追问人性考验、自我重建和人生顿悟；敏感内容点到为止。",
+    },
+}
+for stage in INTERVIEW_STAGES:
+    override = INTERVIEW_STAGE_OVERRIDES.get(stage["id"])
+    if override:
+        stage.update(override)
+INTERVIEW_STAGES.extend(
+    [
+        {
+            "id": "S6",
+            "rounds": 6,
+            "name": "平衡与取舍",
+            "coverage": "30-50岁全周期中的家庭事业冲突、家人亏欠、陪伴平衡、重要忽略瞬间、爱好牺牲、自我放松和优先级变化。",
+            "boundary": "不把单纯事业危机或职业破局作为主线展开；重点始终落在家庭、责任、取舍和和解。",
+            "followup": "围绕家庭事业平衡单步扩展，重点追问愧疚、取舍、家人理解、和解过程和幸福定义。",
+        },
+        {
+            "id": "S7",
+            "rounds": 5,
+            "name": "当下与未来传承",
+            "coverage": "45-50岁展望期的人生复盘、遗憾圆满、意义探寻、经验精神传承和最终人生答案。",
+            "boundary": "这是最终升华阶段，不再开启新的大阶段故事。",
+            "followup": "围绕意义和传承单步扩展，重点追问人生复盘、传承对象、后辈期待和最终答案。",
+        },
+    ]
+)
 INTERVIEW_STAGE_BY_ID = {stage["id"]: stage for stage in INTERVIEW_STAGES}
 FIRST_INTERVIEW_STAGE = INTERVIEW_STAGES[0]["id"]
 LAST_INTERVIEW_STAGE = INTERVIEW_STAGES[-1]["id"]
 INTERVIEW_STAGE_IDS = [stage["id"] for stage in INTERVIEW_STAGES]
 STAGE_STATUS_VALUES = {"not_started", "pending", "active", "completed"}
-STAGE_STATUS_ORDER = ("not_started", "pending", "active", "completed")
+REMOVED_PROGRESS_FIELDS = {
+    "remaining_rounds",
+    "visited_stage_ids",
+    "stage_name",
+    "stage_order",
+    "started_stage_name",
+    "started_stage_order",
+    "stage_plan",
+    "stage_statuses",
+}
 STAGE_TASK_BY_REMAINING_ROUNDS = {
     4: (
         "本轮采访任务：环境与处境。下一问要覆盖这段时期的生活或工作环境、时代条件、家庭或个人处境，"
@@ -123,8 +199,8 @@ GUIDANCE_LIMIT_MESSAGES = [
 class InterviewStateMachine:
     def __init__(self, redis: Redis):
         self.redis = redis
-        self.llm = DashScopeLLM()
-        self.interview_agent = InterviewAgentService()
+        self.guidance_llm = DashScopeLLM()
+        self.interview_agent = InterviewAgentService(checkpointer=RedisCheckpointSaver(redis))
         self.opening = OpeningService()
 
     async def start(self) -> StartInterviewResponse:
@@ -222,12 +298,14 @@ class InterviewStateMachine:
             progress = self._set_turn_transition_hint(progress, route_name=None, history=history)
             stage_description = self._stage_description(progress)
 
-            route = await self.interview_agent.judge_turn_route(
-                user_message=user_content,
-                recent_messages=history,
-                stage_description=stage_description,
-                remaining_rounds=progress["remaining_rounds"],
-            )
+            route = self._forced_cross_stage_route(progress)
+            if route is None:
+                route = await self.interview_agent.judge_turn_route(
+                    user_message=user_content,
+                    recent_messages=history,
+                    stage_description=stage_description,
+                    remaining_rounds=self._remaining_main_question_count(progress),
+                )
             progress = self._set_turn_transition_hint(progress, route_name=route.route, history=history)
             stage_description = self._stage_description(progress)
             stage_history = await self._get_stage_messages(
@@ -236,15 +314,18 @@ class InterviewStateMachine:
             )
             assistant_content, response_source, main_question_id = await self.interview_agent.generate_reply_for_route(
                 route=route,
+                session_id=context.session_id,
+                interview_progress=progress,
                 user_message=user_content,
                 recent_messages=stage_history,
                 stage_description=stage_description,
-                remaining_rounds=progress["remaining_rounds"],
+                remaining_rounds=self._remaining_main_question_count(progress),
                 completed_main_question_ids=self._valid_main_question_ids(
                     progress.get("completed_main_question_ids")
                 ),
             )
             progress = self._set_active_main_question(progress, route.route, main_question_id)
+            progress = self._clear_cross_stage_current(progress)
             await self._append_message(
                 context.session_id,
                 "assistant",
@@ -411,7 +492,7 @@ class InterviewStateMachine:
             "response": "不用紧张呀，我们会用轻松聊天的方式慢慢来。",
         }
 
-        generated = await self.llm.generate_guidance_response(
+        generated = await self.guidance_llm.generate_guidance_response(
             card_id=card_id,
             card_corpus=corpus,
             fallback_message=corpus["response"],
@@ -581,44 +662,47 @@ class InterviewStateMachine:
     async def _reset_interview_progress(self, session_id: str) -> None:
         await self._redis_delete(self._interview_progress_key(session_id))
         await self._redis_delete(self._messages_key(session_id))
+        await self.interview_agent.delete_checkpoint_thread(session_id)
         await self._set_interview_progress(
             session_id,
             {
                 "stage_id": FIRST_INTERVIEW_STAGE,
-                "remaining_rounds": len(MAIN_QUESTION_IDS),
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": [],
                 "pending_stage_mentions": {},
+                "cross_stage_mentions": [],
+                "cross_stage_current": None,
                 "awaiting_stage_completion": 0,
                 "completed_main_question_ids": [],
                 "active_main_question_id": None,
                 "supplement_answered": 0,
                 "started_stage_id": None,
                 "stage_flow": [],
-                "stage_statuses": self._initial_stage_statuses(FIRST_INTERVIEW_STAGE),
-                "stage_plan": self._stage_plan(self._initial_stage_statuses(FIRST_INTERVIEW_STAGE), {}),
             },
         )
 
     async def _get_or_create_interview_progress(self, session_id: str) -> dict[str, Any]:
+        checkpoint_progress = await self.interview_agent.get_checkpointed_interview_progress(session_id)
+        if checkpoint_progress:
+            return self._hydrate_progress_view(checkpoint_progress)
+
         raw = await self._redis_get(self._interview_progress_key(session_id))
         if not raw:
             progress = {
                 "stage_id": FIRST_INTERVIEW_STAGE,
-                "remaining_rounds": len(MAIN_QUESTION_IDS),
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": [],
                 "pending_stage_mentions": {},
+                "cross_stage_mentions": [],
+                "cross_stage_current": None,
                 "awaiting_stage_completion": 0,
                 "completed_main_question_ids": [],
                 "active_main_question_id": None,
                 "supplement_answered": 0,
                 "started_stage_id": None,
                 "stage_flow": [],
-                "stage_statuses": self._initial_stage_statuses(FIRST_INTERVIEW_STAGE),
-                "stage_plan": self._stage_plan(self._initial_stage_statuses(FIRST_INTERVIEW_STAGE), {}),
             }
             await self._set_interview_progress(session_id, progress)
             return self._hydrate_progress_view(progress)
@@ -629,14 +713,14 @@ class InterviewStateMachine:
             data = {}
 
         stage_id = data.get("stage_id") if data.get("stage_id") in INTERVIEW_STAGE_BY_ID else FIRST_INTERVIEW_STAGE
-        try:
-            remaining_rounds = max(0, int(data.get("remaining_rounds", 0)))
-        except (TypeError, ValueError):
-            remaining_rounds = len(MAIN_QUESTION_IDS)
         completed = 1 if str(data.get("completed")) == "1" else 0
-        visited_stage_ids = self._valid_stage_id_list(data.get("visited_stage_ids"))
+        completed_stage_ids = self._valid_stage_id_list(
+            data.get("completed_stage_ids") or data.get("visited_stage_ids")
+        )
         pending_stage_ids = self._valid_stage_id_list(data.get("pending_stage_ids"))
         pending_stage_mentions = self._valid_stage_mentions(data.get("pending_stage_mentions"))
+        cross_stage_mentions = self._valid_cross_stage_mentions(data.get("cross_stage_mentions"))
+        cross_stage_current = self._valid_cross_stage_current(data.get("cross_stage_current"))
         awaiting_stage_completion = 1 if str(data.get("awaiting_stage_completion")) == "1" else 0
         stage_transition_hint = str(data.get("stage_transition_hint") or "")[:160]
         completed_main_question_ids = self._valid_main_question_ids(data.get("completed_main_question_ids"))
@@ -644,50 +728,65 @@ class InterviewStateMachine:
         supplement_answered = 1 if str(data.get("supplement_answered")) == "1" else 0
         started_stage_id = data.get("started_stage_id") if data.get("started_stage_id") in INTERVIEW_STAGE_BY_ID else None
         stage_flow = self._valid_stage_flow(data.get("stage_flow"))
-        stage_statuses = self._valid_stage_statuses(
+        legacy_statuses = self._valid_stage_statuses(
             data.get("stage_statuses"),
             stage_id,
-            visited_stage_ids,
+            completed_stage_ids,
             pending_stage_ids,
         )
+        completed_stage_ids = self._merge_stage_id_lists(
+            completed_stage_ids,
+            self._completed_stage_ids(legacy_statuses),
+            self._completed_stage_ids_from_flow(stage_flow),
+        )
+        pending_stage_ids = [
+            stage_id
+            for stage_id in self._merge_stage_id_lists(
+                pending_stage_ids,
+                [stage_id for stage_id in INTERVIEW_STAGE_IDS if legacy_statuses.get(stage_id) == "pending"],
+            )
+            if stage_id not in completed_stage_ids
+        ]
         if not completed:
-            remaining_rounds = max(0, len(MAIN_QUESTION_IDS) - len(completed_main_question_ids))
-            awaiting_stage_completion = 1 if remaining_rounds == 0 else 0
-        completed_stage_ids = self._completed_stage_ids(stage_statuses)
-        return self._hydrate_progress_view({
+            awaiting_stage_completion = 1 if self._remaining_main_question_count({
+                "completed_main_question_ids": completed_main_question_ids
+            }) == 0 else 0
+        progress = self._hydrate_progress_view({
             "stage_id": stage_id,
-            "stage_name": str(INTERVIEW_STAGE_BY_ID[stage_id]["name"]),
-            "stage_order": INTERVIEW_STAGE_IDS.index(stage_id) + 1,
-            "remaining_rounds": remaining_rounds,
             "completed": completed,
-            "visited_stage_ids": visited_stage_ids,
             "completed_stage_ids": completed_stage_ids,
             "pending_stage_ids": pending_stage_ids,
             "pending_stage_mentions": pending_stage_mentions,
+            "cross_stage_mentions": cross_stage_mentions,
+            "cross_stage_current": cross_stage_current,
             "stage_transition_hint": stage_transition_hint,
             "awaiting_stage_completion": awaiting_stage_completion,
             "completed_main_question_ids": completed_main_question_ids,
             "active_main_question_id": active_main_question_id,
             "supplement_answered": supplement_answered,
             "started_stage_id": started_stage_id,
-            "started_stage_name": self._stage_name(started_stage_id),
-            "started_stage_order": self._stage_order(started_stage_id),
             "stage_flow": stage_flow,
-            "stage_statuses": stage_statuses,
-            "stage_plan": self._stage_plan(stage_statuses, data),
         })
+        await self._set_interview_progress(session_id, progress)
+        return progress
 
     async def _set_interview_progress(self, session_id: str, progress: dict[str, Any]) -> None:
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        if stage_id not in INTERVIEW_STAGE_BY_ID:
+            stage_id = FIRST_INTERVIEW_STAGE
+        completed_stage_ids = self._completed_stage_id_list(progress)
+        pending_stage_ids = self._valid_stage_id_list(progress.get("pending_stage_ids"))
         await self._overwrite_state_value(
             self._interview_progress_key(session_id),
             json.dumps(
                 {
-                    "stage_id": str(progress["stage_id"]),
-                    "remaining_rounds": int(progress["remaining_rounds"]),
+                    "stage_id": stage_id,
                     "completed": int(progress.get("completed", 0)),
-                    "visited_stage_ids": self._valid_stage_id_list(progress.get("visited_stage_ids")),
-                    "pending_stage_ids": self._valid_stage_id_list(progress.get("pending_stage_ids")),
+                    "completed_stage_ids": completed_stage_ids,
+                    "pending_stage_ids": pending_stage_ids,
                     "pending_stage_mentions": self._valid_stage_mentions(progress.get("pending_stage_mentions")),
+                    "cross_stage_mentions": self._valid_cross_stage_mentions(progress.get("cross_stage_mentions")),
+                    "cross_stage_current": self._valid_cross_stage_current(progress.get("cross_stage_current")),
                     "stage_transition_hint": str(progress.get("stage_transition_hint", ""))[:160],
                     "awaiting_stage_completion": int(progress.get("awaiting_stage_completion", 0)),
                     "completed_main_question_ids": self._valid_main_question_ids(
@@ -699,24 +798,13 @@ class InterviewStateMachine:
                     if progress.get("started_stage_id") in INTERVIEW_STAGE_BY_ID
                     else None,
                     "stage_flow": self._valid_stage_flow(progress.get("stage_flow")),
-                    "stage_statuses": self._valid_stage_statuses(
-                        progress.get("stage_statuses"),
-                        str(progress["stage_id"]),
-                        self._valid_stage_id_list(progress.get("visited_stage_ids")),
-                        self._valid_stage_id_list(progress.get("pending_stage_ids")),
-                    ),
-                    "stage_plan": self._stage_plan(
-                        self._valid_stage_statuses(
-                            progress.get("stage_statuses"),
-                            str(progress["stage_id"]),
-                            self._valid_stage_id_list(progress.get("visited_stage_ids")),
-                            self._valid_stage_id_list(progress.get("pending_stage_ids")),
-                        ),
-                        progress,
-                    ),
                 },
                 ensure_ascii=False,
             ),
+        )
+        await self.interview_agent.checkpoint_interview_progress(
+            session_id=session_id,
+            interview_progress=self._hydrate_progress_view(progress),
         )
 
     async def _advance_interview_progress(
@@ -727,10 +815,7 @@ class InterviewStateMachine:
         round_decrement: int = 0,
     ) -> dict[str, Any]:
         if not progress.get("completed"):
-            completed_ids = self._valid_main_question_ids(progress.get("completed_main_question_ids"))
-            remaining_count = max(0, len(MAIN_QUESTION_IDS) - len(completed_ids))
-            progress["remaining_rounds"] = remaining_count
-            progress["awaiting_stage_completion"] = 1 if remaining_count == 0 else 0
+            progress = self._sync_main_question_progress(progress)
             progress = self._sync_stage_flow(progress)
         await self._set_interview_progress(context.session_id, progress)
         return self._hydrate_progress_view(progress)
@@ -754,11 +839,15 @@ class InterviewStateMachine:
                     if stage_id != next_stage_id
                 ]
                 progress = {
-                    **progress,
+                    **self._without_removed_progress_fields(progress),
                     "stage_id": next_stage_id,
-                    "remaining_rounds": len(MAIN_QUESTION_IDS),
                     "completed": 0,
                     "pending_stage_ids": pending_stage_ids,
+                    "cross_stage_mentions": self._mark_cross_stage_mentions_used(
+                        progress.get("cross_stage_mentions"),
+                        next_stage_id,
+                    ),
+                    "cross_stage_current": None,
                     "stage_transition_hint": transition_hint,
                     "awaiting_stage_completion": 0,
                     "completed_main_question_ids": [],
@@ -769,7 +858,7 @@ class InterviewStateMachine:
                 progress = self._sync_stage_flow(progress)
             else:
                 progress = {
-                    **progress,
+                    **self._without_removed_progress_fields(progress),
                     "completed": 1,
                     "awaiting_stage_completion": 0,
                     "active_main_question_id": None,
@@ -779,13 +868,6 @@ class InterviewStateMachine:
         progress = self._sync_stage_flow(progress)
         await self._set_interview_progress(context.session_id, progress)
         return self._hydrate_progress_view(progress)
-
-    async def _complete_stage_if_needed(
-        self,
-        context: InterviewContext,
-        progress: dict[str, Any],
-    ) -> dict[str, Any]:
-        return await self._complete_awaiting_stage_if_needed(context, progress)
 
     @staticmethod
     def _apply_initial_detected_stage(
@@ -811,49 +893,105 @@ class InterviewStateMachine:
         current_stage = str(progress.get("stage_id", ""))
         if detected_stage not in INTERVIEW_STAGE_BY_ID or detected_stage == current_stage:
             return progress
-        visited = InterviewStateMachine._valid_stage_id_list(progress.get("visited_stage_ids"))
+        completed_stage_ids = InterviewStateMachine._completed_stage_id_list(progress)
         pending = InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids"))
         mentions = InterviewStateMachine._valid_stage_mentions(progress.get("pending_stage_mentions"))
-        statuses = InterviewStateMachine._valid_stage_statuses(
-            progress.get("stage_statuses"),
-            current_stage,
-            visited,
-            pending,
-        )
-        if detected_stage in visited or detected_stage in pending or statuses.get(detected_stage) == "completed":
-            return progress
+        if (
+            detected_stage in completed_stage_ids
+            or detected_stage in pending
+        ):
+            cross_stage_current = InterviewStateMachine._build_cross_stage_current(
+                progress,
+                detected_stage,
+                user_content,
+            )
+            return {
+                **InterviewStateMachine._without_removed_progress_fields(progress),
+                "cross_stage_mentions": InterviewStateMachine._append_cross_stage_mention(
+                    progress.get("cross_stage_mentions"),
+                    cross_stage_current,
+                ),
+                "cross_stage_current": cross_stage_current,
+            }
         mention = user_content.strip()[:120]
         if mention:
             mentions[detected_stage] = mention
+        cross_stage_current = InterviewStateMachine._build_cross_stage_current(progress, detected_stage, user_content)
+        cross_stage_mentions = InterviewStateMachine._append_cross_stage_mention(
+            progress.get("cross_stage_mentions"),
+            cross_stage_current,
+        )
         return {
-            **progress,
-            "visited_stage_ids": visited,
+            **InterviewStateMachine._without_removed_progress_fields(progress),
+            "completed_stage_ids": completed_stage_ids,
             "pending_stage_ids": [*pending, detected_stage],
             "pending_stage_mentions": mentions,
-            "stage_statuses": InterviewStateMachine._valid_stage_statuses(
-                progress.get("stage_statuses"),
-                current_stage,
-                visited,
-                [*pending, detected_stage],
-            ),
+            "cross_stage_mentions": cross_stage_mentions,
+            "cross_stage_current": cross_stage_current,
         }
 
     @staticmethod
-    def _apply_route_stage_shift(progress: dict[str, Any], route: Any) -> dict[str, Any]:
-        return progress
+    def _build_cross_stage_current(
+        progress: dict[str, Any],
+        detected_stage: str,
+        user_content: str,
+    ) -> dict[str, Any] | None:
+        current_stage = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        if detected_stage not in INTERVIEW_STAGE_BY_ID or detected_stage == current_stage:
+            return None
+        mention = user_content.strip()
+        if not mention:
+            return None
+        return {
+            "stage_id": detected_stage,
+            "source_stage_id": current_stage,
+            "mention": mention[:160],
+            "created_at": datetime.now(UTC).isoformat(),
+            "used": False,
+        }
 
     @staticmethod
-    def _route_requests_next_stage(route: Any) -> bool:
-        return False
+    def _append_cross_stage_mention(value: Any, mention: dict[str, Any] | None) -> list[dict[str, Any]]:
+        mentions = InterviewStateMachine._valid_cross_stage_mentions(value)
+        current = InterviewStateMachine._valid_cross_stage_current(mention)
+        if current is None:
+            return mentions
+        duplicate = any(
+            item.get("stage_id") == current.get("stage_id")
+            and item.get("source_stage_id") == current.get("source_stage_id")
+            and item.get("mention") == current.get("mention")
+            for item in mentions
+        )
+        if duplicate:
+            return mentions
+        return [*mentions, current]
+
+    @staticmethod
+    def _forced_cross_stage_route(progress: dict[str, Any]) -> InterviewRouteResult | None:
+        if not InterviewStateMachine._valid_cross_stage_current(progress.get("cross_stage_current")):
+            return None
+        return InterviewRouteResult(
+            route="normal_interview",
+            emotion_type="none",
+            needs_emotional_support=False,
+            confidence=1.0,
+            reason=CROSS_STAGE_ROUTE_REASON,
+            should_change_topic=False,
+            do_not_probe_current_topic=False,
+            round_decrement=1,
+        )
+
+    @staticmethod
+    def _clear_cross_stage_current(progress: dict[str, Any]) -> dict[str, Any]:
+        return {**InterviewStateMachine._without_removed_progress_fields(progress), "cross_stage_current": None}
 
     @staticmethod
     def _move_progress_to_initial_stage(progress: dict[str, Any], detected_stage: str) -> dict[str, Any]:
         if detected_stage not in INTERVIEW_STAGE_BY_ID:
             return progress
         updated = {
-            **progress,
+            **InterviewStateMachine._without_removed_progress_fields(progress),
             "stage_id": detected_stage,
-            "remaining_rounds": len(MAIN_QUESTION_IDS),
             "completed": 0,
             "stage_transition_hint": "",
             "awaiting_stage_completion": 0,
@@ -866,9 +1004,9 @@ class InterviewStateMachine:
 
     @staticmethod
     def _mark_stage_visited(progress: dict[str, Any], stage_id: str) -> dict[str, Any]:
-        visited = InterviewStateMachine._valid_stage_id_list(progress.get("visited_stage_ids"))
-        if stage_id in INTERVIEW_STAGE_BY_ID and stage_id not in visited:
-            visited = [*visited, stage_id]
+        completed_stage_ids = InterviewStateMachine._completed_stage_id_list(progress)
+        if stage_id in INTERVIEW_STAGE_BY_ID and stage_id not in completed_stage_ids:
+            completed_stage_ids = [*completed_stage_ids, stage_id]
         pending = [
             pending_stage
             for pending_stage in InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids"))
@@ -876,18 +1014,16 @@ class InterviewStateMachine:
         ]
         mentions = InterviewStateMachine._valid_stage_mentions(progress.get("pending_stage_mentions"))
         mentions.pop(stage_id, None)
-        return {**progress, "visited_stage_ids": visited, "pending_stage_ids": pending, "pending_stage_mentions": mentions}
+        return {
+            **InterviewStateMachine._without_removed_progress_fields(progress),
+            "completed_stage_ids": completed_stage_ids,
+            "pending_stage_ids": pending,
+            "pending_stage_mentions": mentions,
+        }
 
     @staticmethod
     def _next_unvisited_stage_id(progress: dict[str, Any]) -> str | None:
-        visited = set(InterviewStateMachine._valid_stage_id_list(progress.get("visited_stage_ids")))
-        statuses = InterviewStateMachine._valid_stage_statuses(
-            progress.get("stage_statuses"),
-            str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE),
-            list(visited),
-            InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids")),
-        )
-        visited.update(stage_id for stage_id, status in statuses.items() if status == "completed")
+        visited = set(InterviewStateMachine._completed_stage_id_list(progress))
         pending = InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids"))
         for stage_id in pending:
             if stage_id not in visited:
@@ -915,6 +1051,7 @@ class InterviewStateMachine:
         route_name: str | None,
         history: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
+        progress = InterviewStateMachine._without_removed_progress_fields(progress)
         stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
         stage_name = InterviewStateMachine._stage_name(stage_id) or stage_id
         has_prior_user_message = any(message.get("role") == "user" for message in history or [])
@@ -968,17 +1105,48 @@ class InterviewStateMachine:
         return result
 
     @staticmethod
-    def _initial_stage_statuses(active_stage_id: str) -> dict[str, str]:
+    def _valid_cross_stage_current(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        stage_id = str(value.get("stage_id") or "")
+        source_stage_id = str(value.get("source_stage_id") or "")
+        mention = str(value.get("mention") or "").strip()
+        if stage_id not in INTERVIEW_STAGE_BY_ID or source_stage_id not in INTERVIEW_STAGE_BY_ID or not mention:
+            return None
         return {
-            stage_id: "active" if stage_id == active_stage_id else "not_started"
-            for stage_id in INTERVIEW_STAGE_IDS
+            "stage_id": stage_id,
+            "source_stage_id": source_stage_id,
+            "mention": mention[:160],
+            "created_at": str(value.get("created_at") or "").strip()[:40],
+            "used": bool(value.get("used", False)),
         }
+
+    @staticmethod
+    def _valid_cross_stage_mentions(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for item in value:
+            mention = InterviewStateMachine._valid_cross_stage_current(item)
+            if mention is not None:
+                result.append(mention)
+        return result[-20:]
+
+    @staticmethod
+    def _mark_cross_stage_mentions_used(value: Any, stage_id: str) -> list[dict[str, Any]]:
+        mentions = InterviewStateMachine._valid_cross_stage_mentions(value)
+        if stage_id not in INTERVIEW_STAGE_BY_ID:
+            return mentions
+        return [
+            {**mention, "used": True} if mention.get("stage_id") == stage_id else mention
+            for mention in mentions
+        ]
 
     @staticmethod
     def _valid_stage_statuses(
         value: Any,
         current_stage_id: str,
-        visited_stage_ids: list[str],
+        completed_stage_ids: list[str],
         pending_stage_ids: list[str],
     ) -> dict[str, str]:
         statuses: dict[str, str] = {stage_id: "not_started" for stage_id in INTERVIEW_STAGE_IDS}
@@ -988,7 +1156,7 @@ class InterviewStateMachine:
                 status = str(raw_status)
                 if stage_id in INTERVIEW_STAGE_BY_ID and status in STAGE_STATUS_VALUES:
                     statuses[stage_id] = status
-        for stage_id in visited_stage_ids:
+        for stage_id in completed_stage_ids:
             statuses[stage_id] = "completed"
         for stage_id in pending_stage_ids:
             if statuses.get(stage_id) != "completed":
@@ -1019,7 +1187,6 @@ class InterviewStateMachine:
                 status = "active"
             entry: dict[str, Any] = {
                 "stage_id": stage_id,
-                "stage_name": str(INTERVIEW_STAGE_BY_ID[stage_id]["name"]),
                 "status": status,
             }
             started_by = str(item.get("started_by") or "").strip()
@@ -1046,33 +1213,46 @@ class InterviewStateMachine:
         ]
 
     @staticmethod
+    def _without_removed_progress_fields(progress: dict[str, Any]) -> dict[str, Any]:
+        cleaned = {key: value for key, value in progress.items() if key not in REMOVED_PROGRESS_FIELDS}
+        if "completed_stage_ids" not in cleaned and "visited_stage_ids" in progress:
+            cleaned["completed_stage_ids"] = InterviewStateMachine._valid_stage_id_list(
+                progress.get("visited_stage_ids")
+            )
+        return cleaned
+
+    @staticmethod
     def _hydrate_progress_view(progress: dict[str, Any]) -> dict[str, Any]:
+        progress = InterviewStateMachine._sync_stage_flow(progress)
         stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
         if stage_id not in INTERVIEW_STAGE_BY_ID:
             stage_id = FIRST_INTERVIEW_STAGE
-        visited = InterviewStateMachine._valid_stage_id_list(progress.get("visited_stage_ids"))
+        completed_stage_ids = InterviewStateMachine._completed_stage_id_list(progress)
         pending = InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids"))
-        statuses = InterviewStateMachine._valid_stage_statuses(
-            progress.get("stage_statuses"),
-            stage_id,
-            visited,
-            pending,
-        )
         started_stage_id = progress.get("started_stage_id")
         return {
-            **progress,
             "stage_id": stage_id,
-            "stage_name": str(INTERVIEW_STAGE_BY_ID[stage_id]["name"]),
-            "stage_order": INTERVIEW_STAGE_IDS.index(stage_id) + 1,
-            "visited_stage_ids": visited,
-            "completed_stage_ids": InterviewStateMachine._completed_stage_ids(statuses),
+            "completed": int(progress.get("completed", 0)),
+            "completed_stage_ids": completed_stage_ids,
             "pending_stage_ids": pending,
+            "pending_stage_mentions": InterviewStateMachine._valid_stage_mentions(progress.get("pending_stage_mentions")),
+            "cross_stage_mentions": InterviewStateMachine._valid_cross_stage_mentions(
+                progress.get("cross_stage_mentions")
+            ),
+            "cross_stage_current": InterviewStateMachine._valid_cross_stage_current(
+                progress.get("cross_stage_current")
+            ),
+            "stage_transition_hint": str(progress.get("stage_transition_hint") or "")[:160],
+            "awaiting_stage_completion": int(progress.get("awaiting_stage_completion", 0)),
+            "completed_main_question_ids": InterviewStateMachine._valid_main_question_ids(
+                progress.get("completed_main_question_ids")
+            ),
+            "active_main_question_id": InterviewStateMachine._valid_main_question_id(
+                progress.get("active_main_question_id")
+            ),
+            "supplement_answered": int(progress.get("supplement_answered", 0)),
             "started_stage_id": started_stage_id if started_stage_id in INTERVIEW_STAGE_BY_ID else None,
-            "started_stage_name": InterviewStateMachine._stage_name(started_stage_id),
-            "started_stage_order": InterviewStateMachine._stage_order(started_stage_id),
             "stage_flow": InterviewStateMachine._valid_stage_flow(progress.get("stage_flow")),
-            "stage_statuses": statuses,
-            "stage_plan": InterviewStateMachine._stage_plan(statuses, progress),
         }
 
     @staticmethod
@@ -1083,22 +1263,40 @@ class InterviewStateMachine:
         event_stage_id: str | None = None,
     ) -> dict[str, Any]:
         current_stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
-        visited = InterviewStateMachine._valid_stage_id_list(progress.get("visited_stage_ids"))
+        completed_stage_ids = InterviewStateMachine._completed_stage_id_list(progress)
         pending = InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids"))
-        statuses = InterviewStateMachine._valid_stage_statuses(
-            progress.get("stage_statuses"),
-            current_stage_id,
-            visited,
-            pending,
-        )
         flow = InterviewStateMachine._valid_stage_flow(progress.get("stage_flow"))
         started_stage_id = progress.get("started_stage_id")
         if started_stage_id not in INTERVIEW_STAGE_BY_ID:
             started_stage_id = current_stage_id if current_stage_id in INTERVIEW_STAGE_BY_ID else None
 
+        flow = [
+            item
+            for item in flow
+            if not (
+                (item.get("status") == "active" and item.get("stage_id") != current_stage_id)
+                or (item.get("status") == "pending" and item.get("stage_id") not in pending)
+            )
+        ]
+        for completed_stage_id in completed_stage_ids:
+            flow = InterviewStateMachine._upsert_stage_flow_entry(
+                flow,
+                completed_stage_id,
+                "completed",
+                progress,
+            )
+        for pending_stage_id in pending:
+            if pending_stage_id not in completed_stage_ids and pending_stage_id != current_stage_id:
+                flow = InterviewStateMachine._upsert_stage_flow_entry(
+                    flow,
+                    pending_stage_id,
+                    "pending",
+                    progress,
+                )
+
         target_stage_id = event_stage_id or current_stage_id
         if event == "complete" and target_stage_id in INTERVIEW_STAGE_BY_ID:
-            statuses[target_stage_id] = "completed"
+            completed_stage_ids = InterviewStateMachine._merge_stage_id_lists(completed_stage_ids, [target_stage_id])
             flow = InterviewStateMachine._upsert_stage_flow_entry(
                 flow,
                 target_stage_id,
@@ -1107,7 +1305,6 @@ class InterviewStateMachine:
             )
         just_completed_current_stage = event == "complete" and target_stage_id == current_stage_id
         if current_stage_id in INTERVIEW_STAGE_BY_ID and not progress.get("completed") and not just_completed_current_stage:
-            statuses[current_stage_id] = "active"
             flow = InterviewStateMachine._upsert_stage_flow_entry(
                 flow,
                 current_stage_id,
@@ -1115,16 +1312,11 @@ class InterviewStateMachine:
                 progress,
                 started_by="initial" if event == "start" else "state_machine",
             )
-        statuses = InterviewStateMachine._valid_stage_statuses(statuses, current_stage_id, visited, pending)
         return {
-            **progress,
+            **InterviewStateMachine._without_removed_progress_fields(progress),
             "started_stage_id": started_stage_id,
-            "started_stage_name": InterviewStateMachine._stage_name(started_stage_id),
-            "started_stage_order": InterviewStateMachine._stage_order(started_stage_id),
-            "completed_stage_ids": InterviewStateMachine._completed_stage_ids(statuses),
+            "completed_stage_ids": completed_stage_ids,
             "stage_flow": flow,
-            "stage_statuses": statuses,
-            "stage_plan": InterviewStateMachine._stage_plan(statuses, progress),
         }
 
     @staticmethod
@@ -1141,11 +1333,7 @@ class InterviewStateMachine:
         existing_index = next((index for index, item in enumerate(flow) if item.get("stage_id") == stage_id), None)
         entry = {
             "stage_id": stage_id,
-            "stage_name": str(INTERVIEW_STAGE_BY_ID[stage_id]["name"]),
             "status": status,
-            "completed_main_question_ids": InterviewStateMachine._valid_main_question_ids(
-                progress.get("completed_main_question_ids")
-            ),
         }
         if started_by:
             entry["started_by"] = started_by
@@ -1157,6 +1345,12 @@ class InterviewStateMachine:
                 entry["entered_at"] = existing["entered_at"]
             if existing.get("started_by") and not started_by:
                 entry["started_by"] = existing["started_by"]
+            if existing.get("completed_main_question_ids") and stage_id != str(progress.get("stage_id") or ""):
+                entry["completed_main_question_ids"] = existing["completed_main_question_ids"]
+        if stage_id == str(progress.get("stage_id") or ""):
+            completed_ids = InterviewStateMachine._valid_main_question_ids(progress.get("completed_main_question_ids"))
+            if completed_ids:
+                entry["completed_main_question_ids"] = completed_ids
         if status == "completed":
             existing_completed_at = (
                 flow[existing_index].get("completed_at")
@@ -1175,80 +1369,123 @@ class InterviewStateMachine:
         return [stage_id for stage_id in INTERVIEW_STAGE_IDS if stage_statuses.get(stage_id) == "completed"]
 
     @staticmethod
+    def _completed_stage_id_list(progress: dict[str, Any]) -> list[str]:
+        legacy_statuses = InterviewStateMachine._valid_stage_statuses(
+            progress.get("stage_statuses"),
+            str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE),
+            InterviewStateMachine._valid_stage_id_list(progress.get("completed_stage_ids")),
+            InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids")),
+        )
+        return InterviewStateMachine._merge_stage_id_lists(
+            InterviewStateMachine._valid_stage_id_list(progress.get("completed_stage_ids")),
+            InterviewStateMachine._valid_stage_id_list(progress.get("visited_stage_ids")),
+            InterviewStateMachine._completed_stage_ids_from_flow(progress.get("stage_flow")),
+            InterviewStateMachine._completed_stage_ids(legacy_statuses),
+        )
+
+    @staticmethod
+    def _completed_stage_ids_from_flow(value: Any) -> list[str]:
+        return [
+            item["stage_id"]
+            for item in InterviewStateMachine._valid_stage_flow(value)
+            if item.get("status") == "completed"
+        ]
+
+    @staticmethod
+    def _merge_stage_id_lists(*values: list[str]) -> list[str]:
+        merged: list[str] = []
+        for stage_id in INTERVIEW_STAGE_IDS:
+            if any(stage_id in value for value in values) and stage_id not in merged:
+                merged.append(stage_id)
+        return merged
+
+    @staticmethod
     def _stage_name(stage_id: Any) -> str | None:
         stage = INTERVIEW_STAGE_BY_ID.get(str(stage_id))
         return str(stage["name"]) if stage else None
 
     @staticmethod
-    def _stage_order(stage_id: Any) -> int | None:
-        stage_id_str = str(stage_id)
-        if stage_id_str not in INTERVIEW_STAGE_BY_ID:
-            return None
-        return INTERVIEW_STAGE_IDS.index(stage_id_str) + 1
-
-    @staticmethod
-    def _stage_plan(stage_statuses: dict[str, str], progress: dict[str, Any]) -> list[dict[str, Any]]:
-        current_stage_id = str(progress.get("stage_id") or "")
-        pending_mentions = InterviewStateMachine._valid_stage_mentions(progress.get("pending_stage_mentions"))
-        plan: list[dict[str, Any]] = []
-        for index, stage_id in enumerate(INTERVIEW_STAGE_IDS, start=1):
-            item: dict[str, Any] = {
-                "stage_id": stage_id,
-                "stage_name": str(INTERVIEW_STAGE_BY_ID[stage_id]["name"]),
-                "order": index,
-                "status": stage_statuses.get(stage_id, "not_started"),
-                "is_current": stage_id == current_stage_id,
-            }
-            if stage_id in pending_mentions:
-                item["mentioned_context"] = pending_mentions[stage_id]
-            plan.append(item)
-        return plan
-
-    @staticmethod
     def _valid_main_question_id(value: Any) -> int | None:
+        return InterviewStateMachine._valid_main_question_id_for_stage(value)
+
+    @staticmethod
+    def _valid_main_question_id_for_stage(value: Any, stage_id: str | None = None) -> int | None:
         if isinstance(value, bool):
             return None
         try:
             question_id = int(value)
         except (TypeError, ValueError):
             return None
-        if question_id in MAIN_QUESTION_IDS or question_id == 9:
+        valid_ids = InterviewStateMachine._main_question_ids_for_stage(stage_id)
+        if question_id in valid_ids or question_id == 9:
             return question_id
         return None
 
     @staticmethod
     def _valid_main_question_ids(value: Any) -> list[int]:
+        return InterviewStateMachine._valid_main_question_ids_for_stage(value)
+
+    @staticmethod
+    def _valid_main_question_ids_for_stage(value: Any, stage_id: str | None = None) -> list[int]:
         if not isinstance(value, list):
             return []
         result: list[int] = []
         for item in value:
-            question_id = InterviewStateMachine._valid_main_question_id(item)
-            if question_id in MAIN_QUESTION_IDS and question_id not in result:
+            question_id = InterviewStateMachine._valid_main_question_id_for_stage(item, stage_id)
+            if question_id in InterviewStateMachine._main_question_ids_for_stage(stage_id) and question_id not in result:
                 result.append(question_id)
         return result
 
     @staticmethod
+    def _main_question_ids_for_stage(stage_id: str | None) -> tuple[int, ...]:
+        if stage_id in STAGE_MAIN_QUESTION_IDS:
+            return STAGE_MAIN_QUESTION_IDS[stage_id]
+        return MAIN_QUESTION_IDS
+
+    @staticmethod
     def _sync_main_question_progress(progress: dict[str, Any]) -> dict[str, Any]:
-        completed_ids = InterviewStateMachine._valid_main_question_ids(progress.get("completed_main_question_ids"))
-        remaining_count = max(0, len(MAIN_QUESTION_IDS) - len(completed_ids))
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        completed_ids = InterviewStateMachine._valid_main_question_ids_for_stage(
+            progress.get("completed_main_question_ids"),
+            stage_id,
+        )
+        remaining_count = InterviewStateMachine._remaining_main_question_count(
+            {"stage_id": stage_id, "completed_main_question_ids": completed_ids}
+        )
         return {
-            **progress,
+            **InterviewStateMachine._without_removed_progress_fields(progress),
             "completed_main_question_ids": completed_ids,
-            "remaining_rounds": remaining_count,
             "awaiting_stage_completion": 1 if remaining_count == 0 and not progress.get("completed") else 0,
         }
 
     @staticmethod
+    def _remaining_main_question_count(progress: dict[str, Any]) -> int:
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        valid_ids = InterviewStateMachine._main_question_ids_for_stage(stage_id)
+        completed_ids = InterviewStateMachine._valid_main_question_ids_for_stage(
+            progress.get("completed_main_question_ids"),
+            stage_id,
+        )
+        return max(0, len(valid_ids) - len(completed_ids))
+
+    @staticmethod
     def _mark_active_main_question_answered(progress: dict[str, Any]) -> dict[str, Any]:
-        active_question_id = InterviewStateMachine._valid_main_question_id(progress.get("active_main_question_id"))
-        completed_ids = InterviewStateMachine._valid_main_question_ids(progress.get("completed_main_question_ids"))
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        active_question_id = InterviewStateMachine._valid_main_question_id_for_stage(
+            progress.get("active_main_question_id"),
+            stage_id,
+        )
+        completed_ids = InterviewStateMachine._valid_main_question_ids_for_stage(
+            progress.get("completed_main_question_ids"),
+            stage_id,
+        )
         supplement_answered = int(progress.get("supplement_answered", 0))
         if active_question_id == 9:
             supplement_answered = 1
         elif active_question_id is not None and active_question_id not in completed_ids:
             completed_ids.append(active_question_id)
         updated = {
-            **progress,
+            **InterviewStateMachine._without_removed_progress_fields(progress),
             "completed_main_question_ids": completed_ids,
             "active_main_question_id": None,
             "supplement_answered": supplement_answered,
@@ -1257,8 +1494,14 @@ class InterviewStateMachine:
 
     @staticmethod
     def _stage_main_questions_completed(progress: dict[str, Any]) -> bool:
-        completed_ids = set(InterviewStateMachine._valid_main_question_ids(progress.get("completed_main_question_ids")))
-        return set(MAIN_QUESTION_IDS).issubset(completed_ids)
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        completed_ids = set(
+            InterviewStateMachine._valid_main_question_ids_for_stage(
+                progress.get("completed_main_question_ids"),
+                stage_id,
+            )
+        )
+        return set(InterviewStateMachine._main_question_ids_for_stage(stage_id)).issubset(completed_ids)
 
     @staticmethod
     def _set_active_main_question(
@@ -1267,13 +1510,25 @@ class InterviewStateMachine:
         main_question_id: Any,
     ) -> dict[str, Any]:
         if route_name != "normal_interview":
-            return {**progress, "active_main_question_id": None}
-        question_id = InterviewStateMachine._valid_main_question_id(main_question_id)
+            return {
+                **InterviewStateMachine._without_removed_progress_fields(progress),
+                "active_main_question_id": None,
+            }
+        question_id = InterviewStateMachine._valid_main_question_id_for_stage(
+            main_question_id,
+            str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE),
+        )
         if question_id == 9 and int(progress.get("awaiting_stage_completion", 0)):
-            return {**progress, "active_main_question_id": question_id}
+            return {
+                **InterviewStateMachine._without_removed_progress_fields(progress),
+                "active_main_question_id": question_id,
+            }
         if question_id == 9:
             question_id = None
-        return {**progress, "active_main_question_id": question_id}
+        return {
+            **InterviewStateMachine._without_removed_progress_fields(progress),
+            "active_main_question_id": question_id,
+        }
 
     async def _append_message(
         self,
@@ -1356,11 +1611,16 @@ class InterviewStateMachine:
     def _stage_description(progress: dict[str, Any]) -> str:
         stage_id = str(progress["stage_id"])
         stage = INTERVIEW_STAGE_BY_ID.get(stage_id, INTERVIEW_STAGE_BY_ID[FIRST_INTERVIEW_STAGE])
-        completed_ids = InterviewStateMachine._valid_main_question_ids(progress.get("completed_main_question_ids"))
-        pending_ids = [question_id for question_id in MAIN_QUESTION_IDS if question_id not in completed_ids]
+        valid_ids = InterviewStateMachine._main_question_ids_for_stage(stage_id)
+        completed_ids = InterviewStateMachine._valid_main_question_ids_for_stage(
+            progress.get("completed_main_question_ids"),
+            stage_id,
+        )
+        pending_ids = [question_id for question_id in valid_ids if question_id not in completed_ids]
         remaining_rounds = len(pending_ids)
         task = InterviewStateMachine._stage_task(stage_id, remaining_rounds)
         transition_hint = InterviewStateMachine._transition_hint_for_description(progress)
+        cross_stage_instruction = InterviewStateMachine._cross_stage_instruction_for_description(progress)
         return "\n".join(
             [
                 f"阶段：{stage['id']} {stage['name']}",
@@ -1373,6 +1633,7 @@ class InterviewStateMachine:
                 f"当前阶段已收集主问题编号：{InterviewStateMachine._format_main_question_ids(completed_ids)}",
                 f"当前阶段待收集主问题编号：{InterviewStateMachine._format_main_question_ids(pending_ids)}",
                 f"当前阶段剩余主问题数量：{remaining_rounds}",
+                cross_stage_instruction,
                 task,
             ]
         )
@@ -1387,9 +1648,25 @@ class InterviewStateMachine:
         return f"当前处于{stage_name}阶段，代码状态机未触发阶段跳转；请承接用户回答并保持在当前阶段。"
 
     @staticmethod
+    def _cross_stage_instruction_for_description(progress: dict[str, Any]) -> str:
+        current = InterviewStateMachine._valid_cross_stage_current(progress.get("cross_stage_current"))
+        if not current:
+            return ""
+        target_name = InterviewStateMachine._stage_name(current["stage_id"]) or current["stage_id"]
+        source_name = InterviewStateMachine._stage_name(current["source_stage_id"]) or current["source_stage_id"]
+        return (
+            f"跨阶段挂起线索：用户本轮在{source_name}阶段提到了{target_name}阶段内容：{current['mention']}。"
+            f"本轮禁止展开追问该跨阶段内容；只能先自然承接并说明已记下，随后回到{source_name}阶段未覆盖主线问题。"
+        )
+
+    @staticmethod
     def _stage_task(stage_id: str, remaining_rounds: int) -> str:
         if remaining_rounds == 0:
-            return STAGE_SUPPLEMENT_TASK
+            return (
+                "本轮采访任务：当前阶段主问题已经全部收集完成。"
+                "暂不切换阶段，继续调用当前阶段主问题提示词，让模型输出编号9的补充询问，"
+                "询问用户关于当前阶段还有没有没问到但想补充的内容。"
+            )
         if stage_id == LAST_INTERVIEW_STAGE and remaining_rounds <= 1:
             return FINAL_STAGE_TASK
         if remaining_rounds > 4:

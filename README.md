@@ -1,13 +1,14 @@
-# Interview Agent Demo
+# Interview Agent
 
-FastAPI + Redis + DashScope + Vue 3 demo for the silver-age biography interview module.
+FastAPI + Redis + DashScope + Vue 3 application for the silver-age biography interview module.
 
 This version follows the current `jin` branch structure:
 
 - Backend owns the Redis-backed state machine, opening dialog, guidance cards, and formal interview turns.
 - Frontend is only a lightweight test page that adapts to backend dialog endpoints.
 - Guidance-card generation and formal interview replies share `DASHSCOPE_INTERVIEW_MODEL`.
-- Formal interview replies use the Chinese interview-router skill prompts and Redis-backed S0-S5 interview stages.
+- Interview prompts are managed in `app/prompts/interview/` and referenced through `app/prompts/interview_prompts.py`.
+- Formal interview replies use Redis-backed S0-S5 interview stages.
 
 ## Environment
 
@@ -111,7 +112,7 @@ end
 Commands used for local verification:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile app\core\config.py app\core\llm_client.py app\prompts\loader.py app\schemas\interview.py app\services\dashscope_llm.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\services\llm_service.py app\services\opening_service.py app\api\v1\routes\interview.py app\main.py
+.\.venv\Scripts\python.exe -m py_compile app\core\config.py app\core\llm_client.py app\prompts\loader.py app\schemas\interview.py app\services\dashscope_llm.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\services\langgraph_redis_checkpoint.py app\services\opening_service.py app\api\v1\routes\interview.py app\main.py
 cd frontend
 npm.cmd run build
 docker compose -p interview-agent exec -T redis redis-cli ping

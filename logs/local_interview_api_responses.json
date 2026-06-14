@@ -1,0 +1,1180 @@
+{
+  "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+  "records": [
+    {
+      "turn": 1,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "我们开始吧。"
+      },
+      "response_status": 200,
+      "output": "您小时候成长在怎样的家庭环境中，父母日常的教育方式是什么样的？",
+      "next_user_input": "我小时候成长在一个普通但很重规矩的家庭，父母不太讲大道理，但会用行动要求我守信、勤快。",
+      "state": {
+        "stage_id": "S1",
+        "stage_name": "童年底色",
+        "active_main_question_id": 1,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 2,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "我小时候成长在一个普通但很重规矩的家庭，父母不太讲大道理，但会用行动要求我守信、勤快。"
+      },
+      "response_status": 200,
+      "output": "您刚刚说的这段经历很有代表性。现在回头看，它对您后来做选择的方式产生了什么影响？",
+      "next_user_input": "现在回头看，那种家庭氛围确实让我后来做事比较谨慎，也很在意承诺，很多选择都会先想清楚后果。",
+      "state": {
+        "stage_id": "S1",
+        "stage_name": "童年底色",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 3,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "现在回头看，那种家庭氛围确实让我后来做事比较谨慎，也很在意承诺，很多选择都会先想清楚后果。"
+      },
+      "response_status": 200,
+      "output": "回想童年，您当时是怎样的性格，是懂事内敛还是活泼爱闯的类型？",
+      "next_user_input": "童年的我比较懂事内敛，遇到事情习惯先观察，很少主动表达委屈。",
+      "state": {
+        "stage_id": "S1",
+        "stage_name": "童年底色",
+        "active_main_question_id": 2,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 4,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "童年的我比较懂事内敛，遇到事情习惯先观察，很少主动表达委屈。"
+      },
+      "response_status": 200,
+      "output": "小时候您最热衷做什么事，有没有哪件事能让您全身心投入？",
+      "next_user_input": "我小时候最喜欢拆装小东西，能一个人蹲半天研究为什么它能动。",
+      "state": {
+        "stage_id": "S1",
+        "stage_name": "童年底色",
+        "active_main_question_id": 3,
+        "completed_main_question_ids": [
+          1,
+          2
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 5,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "我小时候最喜欢拆装小东西，能一个人蹲半天研究为什么它能动。"
+      },
+      "response_status": 200,
+      "output": "除了家人之外，老师、邻里或是小伙伴里，有没有人对您影响很深？",
+      "next_user_input": "除了家人，小学班主任对我影响很深，他总鼓励我把想法说出来。",
+      "state": {
+        "stage_id": "S1",
+        "stage_name": "童年底色",
+        "active_main_question_id": 4,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 6,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "除了家人，小学班主任对我影响很深，他总鼓励我把想法说出来。"
+      },
+      "response_status": 200,
+      "output": "童年里有没有一件印象深刻的小事，如今回头看，悄悄改变了您的想法或性格？",
+      "next_user_input": "有一次我把邻居家的工具修好了，那件小事让我第一次觉得自己能靠能力帮到别人。",
+      "state": {
+        "stage_id": "S1",
+        "stage_name": "童年底色",
+        "active_main_question_id": 5,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 7,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "有一次我把邻居家的工具修好了，那件小事让我第一次觉得自己能靠能力帮到别人。"
+      },
+      "response_status": 200,
+      "output": "关于童年底色这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "童年底色大概就是父母给我的踏实和老师给我的自信。",
+      "state": {
+        "stage_id": "S1",
+        "stage_name": "童年底色",
+        "active_main_question_id": 9,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 1,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 8,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "童年底色大概就是父母给我的踏实和老师给我的自信。"
+      },
+      "response_status": 200,
+      "output": "您刚刚说的这段经历很有代表性。现在回头看，它对您后来做选择的方式产生了什么影响？",
+      "next_user_input": "那段经历让我开始意识到，人不能只看眼前的成绩，还要知道自己真正想走到哪里。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 9,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "那段经历让我开始意识到，人不能只看眼前的成绩，还要知道自己真正想走到哪里。"
+      },
+      "response_status": 200,
+      "output": "回望少年到青年的这段时光，整体给您留下了怎样的印象？",
+      "next_user_input": "少年到青年这段时光给我的印象是迷茫但有劲，很多东西都想试一试。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": 1,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 10,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "少年到青年这段时光给我的印象是迷茫但有劲，很多东西都想试一试。"
+      },
+      "response_status": 200,
+      "output": "中学到大学阶段，您对未来人生有着怎样的想象和期待？",
+      "next_user_input": "中学到大学时，我希望以后能做点真正有价值的事业，不只是找一份安稳工作。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": 2,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 11,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "中学到大学时，我希望以后能做点真正有价值的事业，不只是找一份安稳工作。"
+      },
+      "response_status": 200,
+      "output": "当年为什么会选择就读这个专业或这所大学，背后有哪些考量？",
+      "next_user_input": "当年选专业主要是觉得它更接近实际问题，也能让我尽早接触社会。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": 3,
+        "completed_main_question_ids": [
+          1,
+          2
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 12,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "当年选专业主要是觉得它更接近实际问题，也能让我尽早接触社会。"
+      },
+      "response_status": 200,
+      "output": "这段时光里，有没有哪位老师、同学或是朋友，对您的影响特别大？",
+      "next_user_input": "大学里有一位老师对我影响很大，他让我明白视野比成绩更重要。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": 4,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 13,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "大学里有一位老师对我影响很大，他让我明白视野比成绩更重要。"
+      },
+      "response_status": 200,
+      "output": "青春期有没有哪一段经历，让您第一次对世界、对自己有了新的认识？",
+      "next_user_input": "大二有一次社会实践，让我第一次看到真实商业世界和书本完全不同。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": 5,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 14,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "大二有一次社会实践，让我第一次看到真实商业世界和书本完全不同。"
+      },
+      "response_status": 200,
+      "output": "您还记得第一次靠自己的能力赚钱是什么时候吗，当时有着怎样的感受？",
+      "next_user_input": "第一次靠自己赚钱是在大学做项目兼职，拿到钱时特别兴奋，也第一次感到独立。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": 6,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 15,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "第一次靠自己赚钱是在大学做项目兼职，拿到钱时特别兴奋，也第一次感到独立。"
+      },
+      "response_status": 200,
+      "output": "关于青春启蒙这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "青春阶段最大的收获，是我开始知道自己想成为怎样的人。",
+      "state": {
+        "stage_id": "S2",
+        "stage_name": "青春启蒙",
+        "active_main_question_id": 9,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "awaiting_stage_completion": 1,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 16,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "青春阶段最大的收获，是我开始知道自己想成为怎样的人。"
+      },
+      "response_status": 200,
+      "output": "刚毕业踏入社会的时候，您对自己的人生有着怎样的规划？",
+      "next_user_input": "刚毕业时我其实规划很粗糙，只想着先活下来，再找机会做出点成绩。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": 1,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 17,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "刚毕业时我其实规划很粗糙，只想着先活下来，再找机会做出点成绩。"
+      },
+      "response_status": 200,
+      "output": "您刚刚说的这段经历很有代表性。现在回头看，它对您后来做选择的方式产生了什么影响？",
+      "next_user_input": "刚工作那几年给我的影响很大，它让我知道很多事情不能等条件都成熟了才开始，必须边做边学。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 18,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "刚工作那几年给我的影响很大，它让我知道很多事情不能等条件都成熟了才开始，必须边做边学。"
+      },
+      "response_status": 200,
+      "output": "您的第一份工作是什么样的，当时的工作状态和收入情况如何？",
+      "next_user_input": "第一份工作很辛苦，收入不高，每天都在学怎么和客户、同事打交道。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": 2,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 19,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "第一份工作很辛苦，收入不高，每天都在学怎么和客户、同事打交道。"
+      },
+      "response_status": 200,
+      "output": "当初为什么会选择进入现在这个行业，是偶然还是早有准备？",
+      "next_user_input": "进入这个行业一半是偶然，一半是因为我发现它能解决真实需求。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": 3,
+        "completed_main_question_ids": [
+          1,
+          2
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 20,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "进入这个行业一半是偶然，一半是因为我发现它能解决真实需求。"
+      },
+      "response_status": 200,
+      "output": "刚打拼的那些年，遇到过哪些让您印象深刻的困难和挑战？",
+      "next_user_input": "刚打拼那几年最大的困难是资源少、经验少，还要不断证明自己。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": 4,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 21,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "刚打拼那几年最大的困难是资源少、经验少，还要不断证明自己。"
+      },
+      "response_status": 200,
+      "output": "这段时期有没有哪位领导、同事或是伙伴，对您的成长帮助很大？",
+      "next_user_input": "有一位老领导帮我很多，他愿意让我承担难项目，也会指出我的问题。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": 5,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 22,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "有一位老领导帮我很多，他愿意让我承担难项目，也会指出我的问题。"
+      },
+      "response_status": 200,
+      "output": "那时候您对“成功”的定义是什么，和现在相比有哪些不同？",
+      "next_user_input": "那时我觉得成功就是赚到钱、被认可，现在更看重长期价值和责任。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": 6,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 23,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "那时我觉得成功就是赚到钱、被认可，现在更看重长期价值和责任。"
+      },
+      "response_status": 200,
+      "output": "关于事业起步与初心这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "事业起步阶段最重要的是让我学会了扛事。",
+      "state": {
+        "stage_id": "S3",
+        "stage_name": "事业起步与初心",
+        "active_main_question_id": 9,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "awaiting_stage_completion": 1,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 24,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "事业起步阶段最重要的是让我学会了扛事。"
+      },
+      "response_status": 200,
+      "output": "您刚刚说的这段经历很有代表性。现在回头看，它对您后来做选择的方式产生了什么影响？",
+      "next_user_input": "那次转折之后，我做决定会更看长期价值，也更能接受短期的不确定和压力。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 25,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "那次转折之后，我做决定会更看长期价值，也更能接受短期的不确定和压力。"
+      },
+      "response_status": 200,
+      "output": "您人生中最重要的一次职业转折是什么时候，当时面临着怎样的选择？",
+      "next_user_input": "最重要的职业转折是在三十岁左右，我决定离开舒适岗位，自己带团队做新方向。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": 1,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 26,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "最重要的职业转折是在三十岁左右，我决定离开舒适岗位，自己带团队做新方向。"
+      },
+      "response_status": 200,
+      "output": "做出这个重大决定的时候，您内心经历了哪些挣扎和考量？",
+      "next_user_input": "做决定时很挣扎，怕失败、怕拖累家人，也怕错过唯一的窗口期。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": 2,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 27,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "做决定时很挣扎，怕失败、怕拖累家人，也怕错过唯一的窗口期。"
+      },
+      "response_status": 200,
+      "output": "有没有一个清晰的时刻，让您觉得“事业终于要走上正轨了”？",
+      "next_user_input": "第一个大客户愿意长期合作的时候，我第一次觉得事业真的要走上正轨了。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": 3,
+        "completed_main_question_ids": [
+          1,
+          2
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 28,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "第一个大客户愿意长期合作的时候，我第一次觉得事业真的要走上正轨了。"
+      },
+      "response_status": 200,
+      "output": "为了实现这次突破，您付出了哪些常人难以想象的努力？",
+      "next_user_input": "为了突破，我连续很久都在一线跑客户、改方案，很多晚上只睡几个小时。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": 4,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 29,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "为了突破，我连续很久都在一线跑客户、改方案，很多晚上只睡几个小时。"
+      },
+      "response_status": 200,
+      "output": "这段时期有没有哪位贵人或是对手，对您的事业发展起到了关键作用？",
+      "next_user_input": "那段时间有个竞争对手逼着我升级能力，也有一位贵人帮我打开资源。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": 5,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 30,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "那段时间有个竞争对手逼着我升级能力，也有一位贵人帮我打开资源。"
+      },
+      "response_status": 200,
+      "output": "现在回头看，这次转折对您的整个人生意味着什么？",
+      "next_user_input": "现在看，那次转折让我从执行者变成了真正承担结果的人。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": 6,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 31,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "现在看，那次转折让我从执行者变成了真正承担结果的人。"
+      },
+      "response_status": 200,
+      "output": "关于关键转折与破局这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "破局阶段最重要的是让我敢于对选择负责。",
+      "state": {
+        "stage_id": "S4",
+        "stage_name": "关键转折与破局",
+        "active_main_question_id": 9,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "awaiting_stage_completion": 1,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 32,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "破局阶段最重要的是让我敢于对选择负责。"
+      },
+      "response_status": 200,
+      "output": "您刚刚说的这段经历很有代表性。现在回头看，它对您后来做选择的方式产生了什么影响？",
+      "next_user_input": "经历过高峰和低谷以后，我不太会被一时的掌声影响了，也更愿意把底线和长期信任放在前面。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 33,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "经历过高峰和低谷以后，我不太会被一时的掌声影响了，也更愿意把底线和长期信任放在前面。"
+      },
+      "response_status": 200,
+      "output": "事业发展到现在，您觉得最有成就感、最让您骄傲的时刻是什么时候？",
+      "next_user_input": "最骄傲的时刻是公司业务做到行业前列，团队也终于被外界认可。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": 1,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 34,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "最骄傲的时刻是公司业务做到行业前列，团队也终于被外界认可。"
+      },
+      "response_status": 200,
+      "output": "有没有哪一次危机或是失败，让您差点放弃自己坚持多年的事业？",
+      "next_user_input": "也有一次现金流危机，差点让我放弃坚持多年的事业。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": 2,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 35,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "也有一次现金流危机，差点让我放弃坚持多年的事业。"
+      },
+      "response_status": 200,
+      "output": "面对巨大的成功和荣誉时，您有没有过迷茫、膨胀或是焦虑的时刻？",
+      "next_user_input": "面对荣誉时我确实膨胀过，也焦虑过，怕自己守不住。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": 3,
+        "completed_main_question_ids": [
+          1,
+          2
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 36,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "面对荣誉时我确实膨胀过，也焦虑过，怕自己守不住。"
+      },
+      "response_status": 200,
+      "output": "经历过巅峰和低谷之后，您对“成功”的理解发生了哪些本质的变化？",
+      "next_user_input": "经历高峰和低谷后，我觉得成功不只是赢，而是能不能长期稳住价值。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": 4,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 37,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "经历高峰和低谷后，我觉得成功不只是赢，而是能不能长期稳住价值。"
+      },
+      "response_status": 200,
+      "output": "这段最艰难的日子里，是什么力量支撑着您一步步走了过来？",
+      "next_user_input": "最难的时候，是团队和家人的信任支撑着我一步步走出来。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": 5,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 38,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "最难的时候，是团队和家人的信任支撑着我一步步走出来。"
+      },
+      "response_status": 200,
+      "output": "从这些经历中，您总结出的最深刻的人生道理是什么？",
+      "next_user_input": "最深的人生道理是不能只看眼前输赢，人要有底线，也要有耐心。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": 6,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 39,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "最深的人生道理是不能只看眼前输赢，人要有底线，也要有耐心。"
+      },
+      "response_status": 200,
+      "output": "关于巅峰与至暗这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "巅峰和低谷让我知道人不能被掌声定义。",
+      "state": {
+        "stage_id": "S5",
+        "stage_name": "巅峰与至暗",
+        "active_main_question_id": 9,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "awaiting_stage_completion": 1,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 40,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "巅峰和低谷让我知道人不能被掌声定义。"
+      },
+      "response_status": 200,
+      "output": "您刚刚说的这段经历很有代表性。现在回头看，它对您后来做选择的方式产生了什么影响？",
+      "next_user_input": "家庭这部分对我的影响很深，它提醒我不能只顾着往前冲，也要回头看看身边的人是否被我落下了。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 41,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "家庭这部分对我的影响很深，它提醒我不能只顾着往前冲，也要回头看看身边的人是否被我落下了。"
+      },
+      "response_status": 200,
+      "output": "这么多年全身心投入事业，您觉得对家人有哪些难以弥补的亏欠？",
+      "next_user_input": "这些年对家人最大的亏欠，是很多重要时刻我都不在场。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": 1,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 42,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "这些年对家人最大的亏欠，是很多重要时刻我都不在场。"
+      },
+      "response_status": 200,
+      "output": "您是如何在高强度的工作中，尽量平衡陪伴家人的时间的？",
+      "next_user_input": "后来我会提前留出固定时间陪家人，哪怕很忙也尽量不取消。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": 2,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 43,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "后来我会提前留出固定时间陪家人，哪怕很忙也尽量不取消。"
+      },
+      "response_status": 200,
+      "output": "有没有哪一个瞬间，让您突然觉得“为了事业忽略了太多重要的东西”？",
+      "next_user_input": "孩子有一次说习惯了我不在家，那一刻我很受触动。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": 3,
+        "completed_main_question_ids": [
+          1,
+          2
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 44,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "孩子有一次说习惯了我不在家，那一刻我很受触动。"
+      },
+      "response_status": 200,
+      "output": "为了扛起家庭和事业的双重责任，您放弃了哪些自己的爱好和追求？",
+      "next_user_input": "为了家庭和事业，我放弃了很多自己的兴趣，也很少真正放松。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": 4,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 45,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "为了家庭和事业，我放弃了很多自己的兴趣，也很少真正放松。"
+      },
+      "response_status": 200,
+      "output": "在忙碌到几乎没有自我的日子里，您是如何找到属于自己的放松方式的？",
+      "next_user_input": "后来我开始通过散步、读书和短暂独处找回一点自己的节奏。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": 5,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 46,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "后来我开始通过散步、读书和短暂独处找回一点自己的节奏。"
+      },
+      "response_status": 200,
+      "output": "随着年龄的增长，您对“家庭”和“事业”的优先级排序有没有发生变化？",
+      "next_user_input": "年龄越大，我越觉得家庭是底盘，事业应该服务于更好的生活。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": 6,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 47,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "年龄越大，我越觉得家庭是底盘，事业应该服务于更好的生活。"
+      },
+      "response_status": 200,
+      "output": "关于平衡与取舍这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "平衡与取舍让我学会不要把亲近的人放到最后。",
+      "state": {
+        "stage_id": "S6",
+        "stage_name": "平衡与取舍",
+        "active_main_question_id": 9,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "awaiting_stage_completion": 1,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 48,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "平衡与取舍让我学会不要把亲近的人放到最后。"
+      },
+      "response_status": 200,
+      "output": "您刚刚说的这段经历很有代表性。现在回头看，它对您后来做选择的方式产生了什么影响？",
+      "next_user_input": "走到现在，我更希望自己的经历能给年轻人一些参考，让他们少走一点弯路，也更早明白什么最重要。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 49,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "走到现在，我更希望自己的经历能给年轻人一些参考，让他们少走一点弯路，也更早明白什么最重要。"
+      },
+      "response_status": 200,
+      "output": "如果把人生分成几个阶段，您会怎么评价自己走过的这半生？",
+      "next_user_input": "如果分阶段看，前半生是积累和冲刺，后半段更像是理解和沉淀。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": 1,
+        "completed_main_question_ids": [],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 50,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "如果分阶段看，前半生是积累和冲刺，后半段更像是理解和沉淀。"
+      },
+      "response_status": 200,
+      "output": "走到今天，您觉得自己人生中最大的遗憾和最大的圆满分别是什么？",
+      "next_user_input": "最大的遗憾是陪伴家人太少，最大的圆满是没有放弃自己的初心。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": 2,
+        "completed_main_question_ids": [
+          1
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 51,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "最大的遗憾是陪伴家人太少，最大的圆满是没有放弃自己的初心。"
+      },
+      "response_status": 200,
+      "output": "当事业已经取得一定成就之后，您开始思考的人生意义是什么？",
+      "next_user_input": "事业有成后，我开始思考怎样让经验帮助更多年轻人少走弯路。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": 3,
+        "completed_main_question_ids": [
+          1,
+          2
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 52,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "事业有成后，我开始思考怎样让经验帮助更多年轻人少走弯路。"
+      },
+      "response_status": 200,
+      "output": "您已经或者正在做哪些事，想要把自己的经验和精神传承下去？",
+      "next_user_input": "我正在培养团队里的年轻人，也想把自己的经历整理成可传承的方法。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": 4,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 53,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "我正在培养团队里的年轻人，也想把自己的经历整理成可传承的方法。"
+      },
+      "response_status": 200,
+      "output": "走到人生这个阶段，您觉得人这一辈子最重要的到底是什么？",
+      "next_user_input": "走到现在，我觉得人这一辈子最重要的是守住良心，也把价值留给别人。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": 5,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 54,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "走到现在，我觉得人这一辈子最重要的是守住良心，也把价值留给别人。"
+      },
+      "response_status": 200,
+      "output": "关于当下与未来传承这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "最后想留给后辈一句话：走得快很重要，但知道为什么出发更重要。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": 9,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 1,
+        "completed": 0
+      }
+    },
+    {
+      "turn": 55,
+      "request": {
+        "session_id": "38c8b948-b810-47f3-b496-d5be9db3c9d2",
+        "content": "最后想留给后辈一句话：走得快很重要，但知道为什么出发更重要。"
+      },
+      "response_status": 200,
+      "output": "关于当下与未来传承这个阶段，还有什么我没问到、但您特别想补充的吗？",
+      "next_user_input": "最后想留给后辈一句话：走得快很重要，但知道为什么出发更重要。",
+      "state": {
+        "stage_id": "S7",
+        "stage_name": "当下与未来传承",
+        "active_main_question_id": null,
+        "completed_main_question_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "awaiting_stage_completion": 0,
+        "completed": 1
+      }
+    }
+  ]
+}

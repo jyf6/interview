@@ -94,8 +94,10 @@ const interviewStageDescription = computed(() => {
   return activeInterviewStage.value?.description ?? '开始采访后，这里会显示当前所处阶段和采访节奏。'
 })
 const interviewRemainingText = computed(() => {
-  const value = interviewState.value?.remaining_rounds
-  return Number.isFinite(Number(value)) ? String(value) : '-'
+  const completedIds = Array.isArray(interviewState.value?.completed_main_question_ids)
+    ? interviewState.value.completed_main_question_ids
+    : []
+  return String(Math.max(0, 8 - completedIds.length))
 })
 const interviewAwaitingStageCompletion = computed(() => String(interviewState.value?.awaiting_stage_completion ?? 0) === '1')
 const interviewCompletedText = computed(() => String(interviewState.value?.completed ?? 0) === '1' ? '已完成' : '进行中')

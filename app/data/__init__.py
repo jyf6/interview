@@ -1,2 +1,1 @@
-"""Static data used by the demo application."""
-
+"""Static data used by the interview application."""

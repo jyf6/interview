@@ -8,10 +8,12 @@ from app.services.interview_agent_service import (
     MAX_HISTORY_MESSAGE_CHARS,
     MAX_HISTORY_MESSAGES,
     InterviewAgentService,
+    InterviewReplyResult,
     InterviewRouteResult,
     InterviewStageDetectionResult,
 )
 from app.services.interview_state_machine import InterviewStateMachine
+from app.services.langgraph_redis_checkpoint import RedisCheckpointSaver
 
 
 class MemoryRedis:
@@ -87,6 +89,35 @@ class InterviewFlowRulesTest(unittest.TestCase):
             InterviewAgentService._select_reply_node({"route": InterviewRouteResult(route="emotional_guidance")}),
             "normal_reply",
         )
+
+    def test_langgraph_checkpoint_persists_turn_state(self) -> None:
+        async def run_case() -> None:
+            service = InterviewAgentService(checkpointer=RedisCheckpointSaver(MemoryRedis()))  # type: ignore[arg-type]
+
+            async def fake_generate_reply(**_: object) -> InterviewReplyResult:
+                return InterviewReplyResult(reply="那段日子里，最主要的生活处境是什么样的？", main_question_id=1)
+
+            service._generate_reply = fake_generate_reply  # type: ignore[method-assign]
+
+            reply, response_source, main_question_id = await service.generate_reply_for_route(
+                route=InterviewRouteResult(route="normal_interview"),
+                session_id="session-graph",
+                interview_progress={"stage_id": "S2", "completed": 0},
+                user_message="那时候刚离开老家。",
+                recent_messages=[],
+                stage_description="阶段：S2 青春岁月",
+                remaining_rounds=8,
+                completed_main_question_ids=[],
+            )
+            snapshot = await service._turn_graph.aget_state(service._graph_config("session-graph"))
+
+            self.assertEqual(reply, "那段日子里，最主要的生活处境是什么样的？")
+            self.assertEqual(response_source, "llm")
+            self.assertEqual(main_question_id, 1)
+            self.assertEqual(snapshot.values["interview_progress"]["stage_id"], "S2")
+            self.assertEqual(snapshot.values["reply"], reply)
+
+        asyncio.run(run_case())
 
     def test_parse_route_normalizes_emotional_guidance_to_normal(self) -> None:
         raw = json.dumps(
@@ -607,7 +638,8 @@ class InterviewFlowRulesTest(unittest.TestCase):
         )
 
         self.assertEqual(updated["stage_id"], "S3")
-        self.assertEqual(updated["remaining_rounds"], 8)
+        self.assertNotIn("remaining_rounds", updated)
+        self.assertEqual(InterviewStateMachine._remaining_main_question_count(updated), 8)
         self.assertEqual(updated["started_stage_id"], "S3")
         self.assertEqual(updated["stage_flow"][0]["stage_id"], "S3")
         self.assertEqual(updated["stage_flow"][0]["status"], "active")
@@ -620,9 +652,10 @@ class InterviewFlowRulesTest(unittest.TestCase):
 
         self.assertEqual(updated["started_stage_id"], "S1")
         self.assertEqual(updated["stage_flow"][0]["stage_id"], "S1")
-        self.assertEqual(updated["stage_statuses"]["S1"], "active")
+        self.assertEqual(updated["stage_flow"][0]["status"], "active")
+        self.assertNotIn("stage_statuses", updated)
 
-    def test_progress_view_records_stage_flow_and_plan_snapshot(self) -> None:
+    def test_progress_view_records_compact_stage_snapshot(self) -> None:
         progress = InterviewStateMachine._sync_stage_flow(
             {
                 "stage_id": "S3",
@@ -643,19 +676,145 @@ class InterviewFlowRulesTest(unittest.TestCase):
         view = InterviewStateMachine._hydrate_progress_view(progress)
 
         self.assertEqual(view["stage_id"], "S3")
-        self.assertEqual(view["stage_name"], "人生转折")
-        self.assertEqual(view["stage_order"], 3)
+        self.assertNotIn("stage_name", view)
+        self.assertNotIn("stage_order", view)
+        self.assertNotIn("remaining_rounds", view)
+        self.assertNotIn("visited_stage_ids", view)
+        self.assertNotIn("stage_plan", view)
         self.assertEqual(view["started_stage_id"], "S3")
-        self.assertEqual(view["started_stage_name"], "人生转折")
-        self.assertEqual(view["started_stage_order"], 3)
+        self.assertNotIn("started_stage_name", view)
+        self.assertNotIn("started_stage_order", view)
+        self.assertNotIn("stage_statuses", view)
         self.assertEqual(view["completed_stage_ids"], ["S1"])
-        self.assertEqual(view["stage_statuses"]["S1"], "completed")
-        self.assertEqual(view["stage_statuses"]["S3"], "active")
-        self.assertEqual(view["stage_statuses"]["S4"], "pending")
-        self.assertEqual(view["stage_flow"][1]["completed_main_question_ids"], [1, 4])
-        self.assertEqual(view["stage_plan"][2]["stage_id"], "S3")
-        self.assertTrue(view["stage_plan"][2]["is_current"])
-        self.assertEqual(view["stage_plan"][3]["mentioned_context"], "退休后清闲一些")
+        flow_statuses = {item["stage_id"]: item["status"] for item in view["stage_flow"]}
+        self.assertEqual(flow_statuses["S1"], "completed")
+        self.assertEqual(flow_statuses["S3"], "active")
+        self.assertEqual(flow_statuses["S4"], "pending")
+        self.assertNotIn("stage_name", view["stage_flow"][0])
+        self.assertNotIn("stage_name", view["stage_flow"][1])
+        self.assertEqual(
+            next(item for item in view["stage_flow"] if item["stage_id"] == "S3")["completed_main_question_ids"],
+            [1, 4],
+        )
+
+    def test_interview_progress_can_restore_from_langgraph_checkpoint(self) -> None:
+        async def run_case() -> None:
+            service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
+            await service.interview_agent.checkpoint_interview_progress(
+                session_id="session-checkpoint",
+                interview_progress={
+                    "stage_id": "S3",
+                    "completed": 0,
+                    "completed_stage_ids": ["S1", "S2"],
+                    "pending_stage_ids": ["S4"],
+                    "pending_stage_mentions": {"S4": "退休后生活清闲了一些"},
+                    "awaiting_stage_completion": 0,
+                    "completed_main_question_ids": [1, 2],
+                    "active_main_question_id": None,
+                    "supplement_answered": 0,
+                    "started_stage_id": "S1",
+                    "stage_flow": [
+                        {"stage_id": "S1", "status": "completed"},
+                        {"stage_id": "S2", "status": "completed"},
+                        {"stage_id": "S3", "status": "active", "completed_main_question_ids": [1, 2]},
+                        {"stage_id": "S4", "status": "pending"},
+                    ],
+                },
+            )
+
+            restored = await service._get_or_create_interview_progress("session-checkpoint")
+
+            self.assertEqual(restored["stage_id"], "S3")
+            self.assertEqual(restored["completed_stage_ids"], ["S1", "S2"])
+            self.assertEqual(restored["pending_stage_ids"], ["S4"])
+            self.assertEqual(restored["completed_main_question_ids"], [1, 2])
+            self.assertEqual(
+                {item["stage_id"]: item["status"] for item in restored["stage_flow"]},
+                {"S1": "completed", "S2": "completed", "S3": "active", "S4": "pending"},
+            )
+
+        asyncio.run(run_case())
+
+    def test_legacy_redis_progress_is_migrated_to_langgraph_checkpoint(self) -> None:
+        async def run_case() -> None:
+            redis = MemoryRedis()
+            service = InterviewStateMachine(redis)  # type: ignore[arg-type]
+            legacy_progress = {
+                "stage_id": "S3",
+                "completed": 0,
+                "completed_stage_ids": ["S1"],
+                "pending_stage_ids": ["S4"],
+                "pending_stage_mentions": {"S4": "retirement was calmer"},
+                "awaiting_stage_completion": 0,
+                "completed_main_question_ids": [1, 2, 3],
+                "active_main_question_id": 3,
+                "supplement_answered": 0,
+                "started_stage_id": "S1",
+                "stage_statuses": {"S1": "completed", "S3": "active", "S4": "pending"},
+            }
+            await redis.set(
+                service._interview_progress_key("session-legacy"),
+                json.dumps(legacy_progress, ensure_ascii=False),
+            )
+
+            restored = await service._get_or_create_interview_progress("session-legacy")
+            checkpoint = await service.interview_agent.get_checkpointed_interview_progress("session-legacy")
+
+            self.assertIsNotNone(checkpoint)
+            assert checkpoint is not None
+            self.assertEqual(restored["stage_id"], "S3")
+            self.assertEqual(checkpoint["stage_id"], "S3")
+            self.assertEqual(checkpoint["completed_stage_ids"], ["S1"])
+            self.assertEqual(checkpoint["pending_stage_ids"], ["S4"])
+            self.assertEqual(checkpoint["completed_main_question_ids"], [1, 2, 3])
+            self.assertNotIn("stage_statuses", checkpoint)
+            self.assertEqual(
+                {item["stage_id"]: item["status"] for item in checkpoint["stage_flow"]},
+                {"S1": "completed", "S3": "active", "S4": "pending"},
+            )
+
+        asyncio.run(run_case())
+
+    def test_reset_interview_progress_replaces_checkpoint_with_initial_progress(self) -> None:
+        async def run_case() -> None:
+            service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
+            await service.interview_agent.checkpoint_interview_progress(
+                session_id="session-reset",
+                interview_progress={
+                    "stage_id": "S3",
+                    "completed": 0,
+                    "completed_stage_ids": ["S1", "S2"],
+                    "pending_stage_ids": ["S4"],
+                    "pending_stage_mentions": {"S4": "retirement was calmer"},
+                    "awaiting_stage_completion": 0,
+                    "completed_main_question_ids": [1, 2, 3],
+                    "active_main_question_id": 3,
+                    "supplement_answered": 0,
+                    "started_stage_id": "S1",
+                    "stage_flow": [
+                        {"stage_id": "S1", "status": "completed"},
+                        {"stage_id": "S2", "status": "completed"},
+                        {"stage_id": "S3", "status": "active", "completed_main_question_ids": [1, 2, 3]},
+                        {"stage_id": "S4", "status": "pending"},
+                    ],
+                },
+            )
+
+            await service._reset_interview_progress("session-reset")
+            restored = await service._get_or_create_interview_progress("session-reset")
+            checkpoint = await service.interview_agent.get_checkpointed_interview_progress("session-reset")
+
+            self.assertIsNotNone(checkpoint)
+            assert checkpoint is not None
+            self.assertEqual(restored["stage_id"], "S1")
+            self.assertEqual(checkpoint["stage_id"], "S1")
+            self.assertEqual(checkpoint["completed_stage_ids"], [])
+            self.assertEqual(checkpoint["pending_stage_ids"], [])
+            self.assertEqual(checkpoint["completed_main_question_ids"], [])
+            self.assertEqual(checkpoint["stage_flow"][0]["stage_id"], "S1")
+            self.assertEqual(checkpoint["stage_flow"][0]["status"], "active")
+
+        asyncio.run(run_case())
 
     def test_completed_stage_mention_is_not_added_to_pending_again(self) -> None:
         progress = {
@@ -673,8 +832,71 @@ class InterviewFlowRulesTest(unittest.TestCase):
         self.assertEqual(updated["pending_stage_ids"], [])
         self.assertEqual(updated["stage_id"], "S3")
 
-    def test_legacy_emotional_route_is_normalized_before_state_progress(self) -> None:
-        progress = {"stage_id": "S2", "remaining_rounds": 3, "completed": 0}
+    def test_cross_stage_mention_is_stored_and_forces_main_route(self) -> None:
+        progress = {
+            "stage_id": "S2",
+            "completed": 0,
+            "pending_stage_ids": [],
+            "pending_stage_mentions": {},
+            "cross_stage_mentions": [],
+        }
+        detection = InterviewStageDetectionResult(stage_code="S4")
+
+        updated = InterviewStateMachine._apply_detected_stage_mention(
+            progress,
+            detection,
+            "退休后我和老伴搬到南昌，每天一起散步。",
+        )
+        route = InterviewStateMachine._forced_cross_stage_route(updated)
+
+        self.assertEqual(updated["stage_id"], "S2")
+        self.assertEqual(updated["pending_stage_ids"], ["S4"])
+        self.assertIn("S4", updated["pending_stage_mentions"])
+        self.assertEqual(updated["cross_stage_current"]["stage_id"], "S4")
+        self.assertEqual(updated["cross_stage_current"]["source_stage_id"], "S2")
+        self.assertEqual(updated["cross_stage_mentions"][0]["stage_id"], "S4")
+        self.assertIsNotNone(route)
+        assert route is not None
+        self.assertEqual(route.route, "normal_interview")
+
+    def test_cross_stage_mentions_are_visible_and_marked_used_on_stage_switch(self) -> None:
+        async def run_case() -> None:
+            service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
+            now = datetime.now(UTC)
+            context = InterviewContext(session_id="session-1", state="INTERVIEWING", created_at=now, updated_at=now)
+            progress = {
+                "stage_id": "S2",
+                "completed": 0,
+                "completed_stage_ids": [],
+                "pending_stage_ids": ["S4"],
+                "pending_stage_mentions": {"S4": "退休后我和老伴搬到南昌，每天一起散步。"},
+                "cross_stage_mentions": [
+                    {
+                        "stage_id": "S4",
+                        "source_stage_id": "S2",
+                        "mention": "退休后我和老伴搬到南昌，每天一起散步。",
+                        "created_at": "2026-06-14T00:00:00+00:00",
+                        "used": False,
+                    }
+                ],
+                "awaiting_stage_completion": 1,
+                "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                "active_main_question_id": 9,
+            }
+
+            view = InterviewStateMachine._hydrate_progress_view(progress)
+            self.assertEqual(view["cross_stage_mentions"][0]["used"], False)
+
+            answered = service._mark_active_main_question_answered(progress)
+            updated = await service._complete_awaiting_stage_if_needed(context, answered)
+
+            self.assertEqual(updated["stage_id"], "S4")
+            self.assertEqual(updated["cross_stage_mentions"][0]["stage_id"], "S4")
+            self.assertEqual(updated["cross_stage_mentions"][0]["used"], True)
+
+        asyncio.run(run_case())
+
+    def test_legacy_emotional_route_is_normalized_to_normal_interview(self) -> None:
         route = InterviewAgentService._parse_route(
             json.dumps(
                 {
@@ -690,12 +912,9 @@ class InterviewFlowRulesTest(unittest.TestCase):
             )
         )
 
-        updated = InterviewStateMachine._apply_route_stage_shift(progress, route)
-
         self.assertEqual(route.route, "normal_interview")
         self.assertTrue(route.needs_emotional_support)
         self.assertEqual(route.round_decrement, 1)
-        self.assertEqual(updated["stage_id"], "S2")
 
     def test_interview_progress_does_not_advance_when_round_decrement_is_zero(self) -> None:
         async def run_case() -> None:
@@ -712,7 +931,8 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._advance_interview_progress(context, progress, round_decrement=0)
 
             self.assertEqual(updated["stage_id"], "S1")
-            self.assertEqual(updated["remaining_rounds"], 3)
+            self.assertNotIn("remaining_rounds", updated)
+            self.assertEqual(InterviewStateMachine._remaining_main_question_count(updated), 3)
             self.assertEqual(updated["completed"], 0)
 
         asyncio.run(run_case())
@@ -734,7 +954,8 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._advance_interview_progress(context, answered, round_decrement=1)
 
             self.assertEqual(updated["stage_id"], "S1")
-            self.assertEqual(updated["remaining_rounds"], 0)
+            self.assertNotIn("remaining_rounds", updated)
+            self.assertEqual(InterviewStateMachine._remaining_main_question_count(updated), 0)
             self.assertEqual(updated["completed"], 0)
             self.assertEqual(updated["awaiting_stage_completion"], 1)
             self.assertEqual(updated["completed_main_question_ids"], [1, 2, 3, 4, 5, 6, 7, 8])
@@ -759,15 +980,15 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._complete_awaiting_stage_if_needed(context, progress)
 
             self.assertEqual(updated["stage_id"], "S1")
-            self.assertEqual(updated["remaining_rounds"], 0)
+            self.assertNotIn("remaining_rounds", updated)
             self.assertEqual(updated["completed"], 0)
             self.assertEqual(updated["awaiting_stage_completion"], 1)
-            self.assertEqual(updated["visited_stage_ids"], [])
+            self.assertNotIn("visited_stage_ids", updated)
+            self.assertEqual(updated["completed_stage_ids"], [])
             self.assertEqual(updated["completed_main_question_ids"], [1, 2, 3, 4, 5, 6, 7, 8])
             self.assertEqual(updated["stage_flow"][0]["stage_id"], "S1")
             self.assertEqual(updated["stage_flow"][0]["status"], "active")
-            self.assertEqual(updated["stage_statuses"]["S1"], "active")
-            self.assertEqual(updated["stage_statuses"]["S2"], "not_started")
+            self.assertNotIn("stage_statuses", updated)
 
         asyncio.run(run_case())
 
@@ -794,7 +1015,8 @@ class InterviewFlowRulesTest(unittest.TestCase):
             self.assertEqual(route.route, "extended_interview")
             self.assertEqual(updated["stage_id"], "S3")
             self.assertEqual(updated["awaiting_stage_completion"], 1)
-            self.assertEqual(updated["remaining_rounds"], 0)
+            self.assertNotIn("remaining_rounds", updated)
+            self.assertEqual(InterviewStateMachine._remaining_main_question_count(updated), 0)
 
         asyncio.run(run_case())
 
@@ -816,8 +1038,9 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._complete_awaiting_stage_if_needed(context, waiting)
 
             self.assertEqual(updated["stage_id"], "S3")
-            self.assertEqual(updated["remaining_rounds"], 0)
-            self.assertEqual(updated["visited_stage_ids"], [])
+            self.assertNotIn("remaining_rounds", updated)
+            self.assertNotIn("visited_stage_ids", updated)
+            self.assertEqual(updated["completed_stage_ids"], [])
             self.assertEqual(updated["awaiting_stage_completion"], 1)
 
         asyncio.run(run_case())
@@ -840,9 +1063,10 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._complete_awaiting_stage_if_needed(context, waiting)
 
             self.assertEqual(updated["stage_id"], "S3")
-            self.assertEqual(updated["remaining_rounds"], 0)
+            self.assertNotIn("remaining_rounds", updated)
             self.assertEqual(updated["pending_stage_ids"], ["S4"])
-            self.assertEqual(updated["visited_stage_ids"], [])
+            self.assertNotIn("visited_stage_ids", updated)
+            self.assertEqual(updated["completed_stage_ids"], [])
 
         asyncio.run(run_case())
 
@@ -893,8 +1117,9 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._complete_awaiting_stage_if_needed(context, answered)
 
             self.assertEqual(updated["stage_id"], "S4")
-            self.assertEqual(updated["remaining_rounds"], 8)
-            self.assertEqual(updated["visited_stage_ids"], ["S3"])
+            self.assertNotIn("remaining_rounds", updated)
+            self.assertEqual(InterviewStateMachine._remaining_main_question_count(updated), 8)
+            self.assertNotIn("visited_stage_ids", updated)
             self.assertEqual(updated["completed_stage_ids"], ["S3"])
             self.assertEqual(updated["completed_main_question_ids"], [])
             self.assertEqual(updated["supplement_answered"], 0)
@@ -939,10 +1164,13 @@ class InterviewFlowRulesTest(unittest.TestCase):
             updated = await service._complete_awaiting_stage_if_needed(context, waiting)
 
             self.assertEqual(updated["stage_id"], "S1")
-            self.assertEqual(updated["visited_stage_ids"], ["S3"])
-            self.assertEqual(updated["stage_statuses"]["S3"], "completed")
-            self.assertEqual(updated["stage_statuses"]["S1"], "active")
-            self.assertEqual(updated["stage_statuses"]["S2"], "not_started")
+            self.assertNotIn("visited_stage_ids", updated)
+            self.assertEqual(updated["completed_stage_ids"], ["S3"])
+            self.assertNotIn("stage_statuses", updated)
+            flow_statuses = {item["stage_id"]: item["status"] for item in updated["stage_flow"]}
+            self.assertEqual(flow_statuses["S3"], "completed")
+            self.assertEqual(flow_statuses["S1"], "active")
+            self.assertNotIn("S2", flow_statuses)
             description = InterviewStateMachine._stage_description(updated)
             self.assertIn("编号 9 的补充询问", description)
 
@@ -968,7 +1196,8 @@ class InterviewFlowRulesTest(unittest.TestCase):
 
             self.assertEqual(updated["completed"], 1)
             self.assertEqual(updated["awaiting_stage_completion"], 0)
-            self.assertEqual(updated["visited_stage_ids"], ["S1", "S2", "S3", "S4", "S5"])
+            self.assertNotIn("visited_stage_ids", updated)
+            self.assertEqual(updated["completed_stage_ids"], ["S1", "S2", "S3", "S4", "S5"])
             self.assertEqual(updated["stage_id"], "S5")
 
         asyncio.run(run_case())

@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "interview-agent-demo"
+    app_name: str = "interview-agent"
     app_env: str = "development"
     api_v1_prefix: str = "/api/v1"
     cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     dashscope_model: str = "qwen-plus"
     dashscope_interview_model: str = "qwen-plus"
     dashscope_timeout_seconds: int = Field(default=60, ge=5)
-    general_chat_prompt_file: str = "general_chat_system.txt"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

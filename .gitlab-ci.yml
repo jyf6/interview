@@ -1,0 +1,154 @@
+stages:
+  - security
+  - lint
+  - test
+  - build
+  - deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.cache/npm"
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+default:
+  interruptible: true
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .cache/pip/
+    - .cache/npm/
+    - frontend/node_modules/
+
+.python-job:
+  image: "python:${PYTHON_VERSION}-slim"
+  before_script:
+    - python -m pip install --upgrade pip
+    - python -m pip install -r requirements.txt
+
+.node-job:
+  image: "node:${NODE_VERSION}-alpine"
+  before_script:
+    - cd frontend
+    - npm ci --cache "$NPM_CONFIG_CACHE"
+
+scan-bandit:
+  extends: .python-job
+  stage: security
+  script:
+    - python -m pip install bandit
+    - bandit -r app demo -x tests -ll
+
+scan-python-deps:
+  extends: .python-job
+  stage: security
+  script:
+    - python -m pip install pip-audit
+    - pip-audit -r requirements.txt
+
+scan-secrets:
+  image: "python:${PYTHON_VERSION}-slim"
+  stage: security
+  script:
+    - python -m pip install detect-secrets
+    - detect-secrets scan --all-files --exclude-files '(^\.git/|^\.venv/|^\.venv312/|^frontend/node_modules/|^frontend/dist/|^\.cache/)' > .secrets.scan.json
+    - python -c "import json,sys; data=json.load(open('.secrets.scan.json',encoding='utf-8')); count=sum(len(v) for v in data.get('results',{}).values()); print('detect-secrets findings', count); sys.exit(1 if count else 0)"
+  artifacts:
+    when: always
+    paths:
+      - .secrets.scan.json
+    expire_in: 1 week
+
+scan-trivy:
+  image:
+    name: aquasec/trivy:0.56.2
+    entrypoint: [""]
+  stage: security
+  variables:
+    TRIVY_CACHE_DIR: "$CI_PROJECT_DIR/.cache/trivy"
+  script:
+    - trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --skip-dirs .git --skip-dirs .venv --skip-dirs .venv312 --skip-dirs frontend/node_modules --skip-dirs frontend/dist .
+
+scan-npm-audit:
+  extends: .node-job
+  stage: security
+  script:
+    - npm audit --audit-level=high
+
+lint-backend:
+  extends: .python-job
+  stage: lint
+  script:
+    - python -m pip install ruff
+    - ruff check app demo tests
+
+lint-frontend:
+  extends: .node-job
+  stage: lint
+  script:
+    - npm run build
+
+test-backend:
+  extends: .python-job
+  stage: test
+  services:
+    - name: redis:7-alpine
+      alias: redis
+  variables:
+    REDIS_URL: "redis://redis:6379/0"
+    DASHSCOPE_API_KEY: ""
+    DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    DASHSCOPE_MODEL: "qwen-plus"
+    DASHSCOPE_INTERVIEW_MODEL: "qwen-plus"
+  script:
+    - python -m pip install pytest
+    - python -m pytest -q
+
+test-frontend:
+  extends: .node-job
+  stage: test
+  script:
+    - npm run build
+
+test-mobile:
+  image: "node:${NODE_VERSION}-alpine"
+  stage: test
+  rules:
+    - exists:
+        - mobile/package.json
+    - when: manual
+      allow_failure: true
+  script:
+    - 'test -f mobile/package.json || { echo "mobile/package.json not found; skipping mobile test."; exit 0; }'
+    - cd mobile
+    - npm ci --cache "$NPM_CONFIG_CACHE"
+    - npm test
+
+build-frontend:
+  extends: .node-job
+  stage: build
+  script:
+    - npm run build
+  artifacts:
+    paths:
+      - frontend/dist/
+    expire_in: 1 week
+
+build-backend:
+  extends: .python-job
+  stage: build
+  script:
+    - python -m compileall app demo
+
+deploy-staging:
+  stage: deploy
+  image: alpine:3.20
+  needs:
+    - build-backend
+    - build-frontend
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  script:
+    - echo "Add staging deployment commands here."

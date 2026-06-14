@@ -1,13 +1,23 @@
 import asyncio
 import json
-from pathlib import Path
 from typing import Any, Literal, TypedDict
+from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
 from app.core.llm_client import interview_llm
 from app.core.perf import perf_span
+from app.prompts.loader import load_prompt
+from app.prompts.interview_prompts import (
+    EMOTION_BASE_PROMPT,
+    EMOTION_PROMPT_BY_TYPE,
+    ICEBREAKER_PROMPT,
+    ROUTING_JUDGEMENT_PROMPT,
+    STAGE_DETECTION_PROMPT,
+    STAGE_MAIN_QUESTION_IDS,
+    STAGE_PROMPT_FILES,
+)
 
 TurnGraphNextNode = Literal[
     "normal_reply",
@@ -19,8 +29,8 @@ RouteName = Literal[
     "emotional_guidance",
 ]
 
-VALID_STAGE_IDS = {"S1", "S2", "S3", "S4", "S5", "unclear"}
-FORMAL_STAGE_IDS = ("S1", "S2", "S3", "S4", "S5")
+VALID_STAGE_IDS = {*STAGE_MAIN_QUESTION_IDS.keys(), "unclear"}
+FORMAL_STAGE_IDS = tuple(STAGE_MAIN_QUESTION_IDS.keys())
 STAGE_NAME_BY_ID = {
     "S1": "童年时光",
     "S2": "青春岁月",
@@ -29,9 +39,31 @@ STAGE_NAME_BY_ID = {
     "S5": "收尾总结",
     "unclear": "未识别",
 }
-MAIN_QUESTION_IDS = tuple(range(1, 9))
+STAGE_NAME_BY_ID.update(
+    {
+        "S1": "童年底色",
+        "S2": "青春启蒙",
+        "S3": "事业起步与初心",
+        "S4": "关键转折与破局",
+        "S5": "巅峰与至暗",
+        "S6": "平衡与取舍",
+        "S7": "当下与未来传承",
+        "unclear": "未识别",
+    }
+)
+MAIN_QUESTION_IDS = tuple(
+    range(1, max(max(ids) for ids in STAGE_MAIN_QUESTION_IDS.values()) + 1)
+)
 SUPPLEMENT_QUESTION_ID = 9
 FOLLOWUP_EXHAUSTED_REPLY = "当前主问题所有追问已完成"
+EMOTIONAL_SUPPORT_TYPES = {
+    "sadness",
+    "regret_self_blame",
+    "repression_grievance",
+    "anxiety_heavy",
+    "loneliness",
+    "mixed",
+}
 REPLY_NODE_BY_ROUTE: dict[RouteName, TurnGraphNextNode] = {
     "normal_interview": "normal_reply",
     "extended_interview": "extended_reply",
@@ -60,56 +92,6 @@ NORMAL_INTERVIEW_SECTIONS = (
     "## 阶段收束提示词",
     "## 输入区",
 )
-ROUTING_JUDGEMENT_PROMPT = "prompts/routing-judgement.md"
-STAGE_DETECTION_PROMPT = "prompts/stage-detection.md"
-EMOTION_BASE_PROMPT = "prompts/emotion/base.md"
-EMOTION_PROMPT_BY_TYPE = {
-    "none": "prompts/emotion/none.md",
-    "sadness": "prompts/emotion/sadness.md",
-    "regret_self_blame": "prompts/emotion/regret-self-blame.md",
-    "repression_grievance": "prompts/emotion/repression-grievance.md",
-    "anxiety_heavy": "prompts/emotion/anxiety-heavy.md",
-    "loneliness": "prompts/emotion/loneliness.md",
-    "mixed": "prompts/emotion/mixed.md",
-    "unclear": "prompts/emotion/unclear.md",
-}
-
-STAGE_PROMPT_FILES: dict[str, dict[str, str]] = {
-    "S1": {
-        "main_question": "prompts/s1-childhood-main-question.md",
-        "followup": "prompts/s1-childhood-detail-followup.md",
-    },
-    "S2": {
-        "main_question": "prompts/s2-youth-main-question.md",
-        "followup": "prompts/s2-youth-detail-followup.md",
-    },
-    "S3": {
-        "main_question": "prompts/s3-turning-point-main-question.md",
-        "followup": "prompts/s3-turning-point-detail-followup.md",
-    },
-    "S4": {
-        "main_question": "prompts/s4-life-experience-main-question.md",
-        "followup": "prompts/s4-life-experience-detail-followup.md",
-    },
-    "S5": {
-        "main_question": "prompts/s5-closing-main-question.md",
-        "followup": "prompts/s5-closing-detail-followup.md",
-    },
-}
-
-SKILL_DIR = (
-    Path(__file__).resolve().parents[2]
-    / ".codex"
-    / "skills"
-    / "interview-prompt-router-zh"
-)
-SKILL_REFERENCES_DIR = SKILL_DIR / "references"
-
-ICEBREAKER_MESSAGE = (
-    "您好，今天想陪您慢慢聊聊过往的人生故事，咱们就像唠家常一样，"
-    "不用准备，也不用讲得多完整。最先想起的，是哪一段日子呢？"
-)
-
 class InterviewRouteResult(BaseModel):
     route: RouteName = "normal_interview"
     emotion_type: str = "none"
@@ -145,20 +127,22 @@ class InterviewOpeningResult(BaseModel):
 
 
 class InterviewTurnGraphState(TypedDict, total=False):
+    session_id: str
+    interview_progress: dict[str, Any]
     user_message: str
     recent_messages: list[dict[str, str]]
     stage_description: str
     remaining_rounds: int
     completed_main_question_ids: list[int]
-    route: InterviewRouteResult
+    route: dict[str, Any]
     reply: str
     response_source: Literal["llm"]
     main_question_id: int | None
 
 
 class InterviewAgentService:
-    def __init__(self) -> None:
-        self._turn_graph = self._build_turn_graph()
+    def __init__(self, checkpointer: Any | None = None) -> None:
+        self._turn_graph = self._build_turn_graph(checkpointer=checkpointer)
 
     async def generate_icebreaker(
         self,
@@ -167,7 +151,7 @@ class InterviewAgentService:
         stage_description: str,
     ) -> InterviewOpeningResult:
         with perf_span("interview.icebreaker.total", history=len(recent_messages)):
-            return InterviewOpeningResult(reply=ICEBREAKER_MESSAGE, response_source="none")
+            return InterviewOpeningResult(reply=load_prompt(ICEBREAKER_PROMPT), response_source="none")
 
     async def generate_turn(
         self,
@@ -177,20 +161,25 @@ class InterviewAgentService:
         stage_description: str,
         remaining_rounds: int,
         completed_main_question_ids: list[int] | None = None,
+        session_id: str | None = None,
+        interview_progress: dict[str, Any] | None = None,
     ) -> InterviewTurnResult:
         with perf_span("interview.turn.total", chars=len(user_message), history=len(recent_messages)):
             state = await self._turn_graph.ainvoke(
                 {
+                    "session_id": session_id or "",
+                    "interview_progress": interview_progress or {},
                     "user_message": user_message,
                     "recent_messages": recent_messages,
                     "stage_description": stage_description,
                     "remaining_rounds": remaining_rounds,
                     "completed_main_question_ids": completed_main_question_ids or [],
-                }
+                },
+                self._graph_config(session_id),
             )
             return InterviewTurnResult(
                 reply=state["reply"],
-                route=state["route"],
+                route=self._route_from_state(state),
                 response_source=state.get("response_source", "llm"),
                 main_question_id=state.get("main_question_id"),
             )
@@ -211,10 +200,10 @@ class InterviewAgentService:
                 "remaining_rounds": remaining_rounds,
             }
         )
-        return state["route"]
+        return self._route_from_state(state)
 
     async def detect_user_stage(self, *, user_message: str) -> InterviewStageDetectionResult:
-        prompt = self._extract_text_block(self._load_skill_prompt(STAGE_DETECTION_PROMPT))
+        prompt = self._extract_text_block(self._load_interview_prompt(STAGE_DETECTION_PROMPT))
         prompt = prompt.replace("{{用户文本}}", user_message)
         with perf_span("llm.interview.stage_detection", model=interview_llm.model, chars=len(user_message)):
             raw = await asyncio.to_thread(
@@ -235,10 +224,14 @@ class InterviewAgentService:
         stage_description: str,
         remaining_rounds: int,
         completed_main_question_ids: list[int] | None = None,
+        session_id: str | None = None,
+        interview_progress: dict[str, Any] | None = None,
     ) -> tuple[str, Literal["llm"], int | None]:
         route = self._normalize_active_route(route)
         state: InterviewTurnGraphState = {
-            "route": route,
+            "route": self._route_to_state(route),
+            "session_id": session_id or "",
+            "interview_progress": interview_progress or {},
             "user_message": user_message,
             "recent_messages": recent_messages,
             "stage_description": stage_description,
@@ -246,12 +239,38 @@ class InterviewAgentService:
             "completed_main_question_ids": completed_main_question_ids or [],
             "response_source": "llm",
         }
-        result = await self._reply_handlers()[self._select_reply_node(state)](state)
+        result = await self._turn_graph.ainvoke(state, self._graph_config(session_id))
         if route.route == "extended_interview" and result["reply"].strip() == FOLLOWUP_EXHAUSTED_REPLY:
             normal_route = route.model_copy(update={"route": "normal_interview", "round_decrement": 1})
-            state["route"] = normal_route
-            result = await self._normal_reply_turn(state)
+            state["route"] = self._route_to_state(normal_route)
+            result = await self._turn_graph.ainvoke(state, self._graph_config(session_id))
         return result["reply"], result.get("response_source", "llm"), result.get("main_question_id")
+
+    async def checkpoint_interview_progress(
+        self,
+        *,
+        session_id: str,
+        interview_progress: dict[str, Any],
+    ) -> None:
+        await self._turn_graph.aupdate_state(
+            self._graph_config(session_id),
+            {
+                "session_id": session_id,
+                "interview_progress": interview_progress,
+            },
+            as_node="normal_reply",
+        )
+
+    async def get_checkpointed_interview_progress(self, session_id: str) -> dict[str, Any] | None:
+        snapshot = await self._turn_graph.aget_state(self._graph_config(session_id))
+        progress = snapshot.values.get("interview_progress")
+        return progress if isinstance(progress, dict) else None
+
+    async def delete_checkpoint_thread(self, session_id: str) -> None:
+        checkpointer = getattr(self._turn_graph, "checkpointer", None)
+        if checkpointer is None:
+            return
+        await checkpointer.adelete_thread(f"interview-turn:{session_id}")
 
     def _reply_handlers(self) -> dict[TurnGraphNextNode, Any]:
         return {
@@ -260,17 +279,23 @@ class InterviewAgentService:
         }
 
     async def _llm_route_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
+        if "route" in state:
+            route = self._route_from_state(state)
+            return {
+                "route": self._route_to_state(self._apply_stage_route_rules(route, state["stage_description"])),
+                "response_source": state.get("response_source", "llm"),
+            }
         route = await self._judge_route(
             state["user_message"],
             state["recent_messages"],
             state["remaining_rounds"],
         )
         return {
-            "route": self._apply_stage_route_rules(route, state["stage_description"]),
+            "route": self._route_to_state(self._apply_stage_route_rules(route, state["stage_description"])),
             "response_source": "llm",
         }
 
-    def _build_turn_graph(self) -> Any:
+    def _build_turn_graph(self, *, checkpointer: Any | None = None) -> Any:
         graph = StateGraph(InterviewTurnGraphState)
         graph.add_node("route", self._route_turn)
         graph.add_node("normal_reply", self._normal_reply_turn)
@@ -286,14 +311,20 @@ class InterviewAgentService:
         )
         graph.add_edge("normal_reply", END)
         graph.add_edge("extended_reply", END)
-        return graph.compile()
+        return graph.compile(checkpointer=checkpointer)
+
+    @staticmethod
+    def _graph_config(session_id: str | None) -> dict[str, dict[str, str]]:
+        if not session_id:
+            return {"configurable": {"thread_id": f"interview-turn:ephemeral:{uuid4()}"}}
+        return {"configurable": {"thread_id": f"interview-turn:{session_id}"}}
 
     async def _route_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
         return await self._llm_route_turn(state)
 
     @staticmethod
     def _select_reply_node(state: InterviewTurnGraphState) -> TurnGraphNextNode:
-        return REPLY_NODE_BY_ROUTE[state["route"].route]
+        return REPLY_NODE_BY_ROUTE[InterviewAgentService._route_from_state(state).route]
 
     async def _normal_reply_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
         return await self._llm_reply_turn(state)
@@ -302,7 +333,7 @@ class InterviewAgentService:
         return await self._llm_reply_turn(state)
 
     async def _llm_reply_turn(self, state: InterviewTurnGraphState) -> InterviewTurnGraphState:
-        route = state["route"]
+        route = self._route_from_state(state)
         user_message = state["user_message"]
         recent_messages = state["recent_messages"]
         stage_description = state["stage_description"]
@@ -323,13 +354,24 @@ class InterviewAgentService:
             "main_question_id": result.main_question_id,
         }
 
+    @staticmethod
+    def _route_to_state(route: InterviewRouteResult) -> dict[str, Any]:
+        return route.model_dump(mode="json")
+
+    @staticmethod
+    def _route_from_state(state: InterviewTurnGraphState) -> InterviewRouteResult:
+        route = state["route"]
+        if isinstance(route, InterviewRouteResult):
+            return route
+        return InterviewRouteResult.model_validate(route)
+
     async def _judge_route(
         self,
         user_message: str,
         recent_messages: list[dict[str, str]],
         remaining_rounds: int,
     ) -> InterviewRouteResult:
-        prompt = self._extract_text_block(self._load_skill_prompt(ROUTING_JUDGEMENT_PROMPT))
+        prompt = self._extract_text_block(self._load_interview_prompt(ROUTING_JUDGEMENT_PROMPT))
         prompt = (
             prompt.replace("{{历史对话}}", self._format_history(recent_messages))
             .replace("{{当前阶段建议剩余轮数}}", str(max(0, remaining_rounds)))
@@ -377,7 +419,11 @@ class InterviewAgentService:
                 max_tokens=512,
             )
         if route.route == "normal_interview":
-            return self._parse_main_question_reply(raw, allow_supplement=remaining_rounds == 0)
+            return self._parse_main_question_reply(
+                raw,
+                allow_supplement=remaining_rounds == 0,
+                stage_id=self._stage_id_from_description(stage_description),
+            )
         return InterviewReplyResult(reply=self._normalize_reply(raw))
 
     def _build_reply_prompt(
@@ -409,7 +455,7 @@ class InterviewAgentService:
             ),
             "extended_interview": lambda: (
                 self._extract_text_block(
-                    self._load_skill_prompt(
+                    self._load_interview_prompt(
                         self._prompt_file_for_stage(stage_id, "followup")
                     )
                 ),
@@ -421,7 +467,7 @@ class InterviewAgentService:
         return self._fill_prompt(prompt, replacements, values)
 
     def _build_main_question_prompt(self, prompt_name: str, remaining_rounds: int) -> str:
-        doc = self._load_skill_prompt(prompt_name)
+        doc = self._load_interview_prompt(prompt_name)
         if not all(title in doc for title in NORMAL_INTERVIEW_SECTIONS):
             return self._extract_text_block(doc)
         base, normal, low_round, input_block = (
@@ -441,25 +487,32 @@ class InterviewAgentService:
         return "你是一位温和的纪实采访者。只输出一句采访话术，不要添加“采：”或任何说话人前缀。"
 
     @staticmethod
-    def _parse_main_question_reply(raw: str, *, allow_supplement: bool = False) -> InterviewReplyResult:
+    def _parse_main_question_reply(
+        raw: str,
+        *,
+        allow_supplement: bool = False,
+        stage_id: str = "unclear",
+    ) -> InterviewReplyResult:
         data: dict[str, Any] = json.loads(raw.strip())
         reply = data.get("reply", data.get("question"))
         raw_question_id = data.get("question_id", data.get("question_number", data.get("main_question_id")))
+        valid_ids = InterviewAgentService._main_question_ids_for_stage(stage_id)
+        valid_label = f"{valid_ids[0]} to {valid_ids[-1]}" if valid_ids else "the current stage range"
         if not isinstance(reply, str) or not reply.strip():
             raise ValueError("Main question reply JSON must include a non-empty reply/question string.")
         if isinstance(raw_question_id, bool):
-            raise ValueError("Main question id must be an integer from 1 to 8, or 9 in supplement mode.")
+            raise ValueError(f"Main question id must be an integer from {valid_label}, or 9 in supplement mode.")
         try:
             question_id = int(raw_question_id)
         except (TypeError, ValueError) as exc:
-            raise ValueError("Main question id must be an integer from 1 to 8, or 9 in supplement mode.") from exc
+            raise ValueError(f"Main question id must be an integer from {valid_label}, or 9 in supplement mode.") from exc
         if allow_supplement and question_id == SUPPLEMENT_QUESTION_ID:
             return InterviewReplyResult(
                 reply=InterviewAgentService._normalize_reply(reply),
                 main_question_id=SUPPLEMENT_QUESTION_ID,
             )
-        if question_id not in MAIN_QUESTION_IDS:
-            raise ValueError("Main question id must be an integer from 1 to 8, or 9 in supplement mode.")
+        if question_id not in valid_ids:
+            raise ValueError(f"Main question id must be an integer from {valid_label}, or 9 in supplement mode.")
         return InterviewReplyResult(reply=InterviewAgentService._normalize_reply(reply), main_question_id=question_id)
 
     @staticmethod
@@ -486,19 +539,19 @@ class InterviewAgentService:
     def _route_needs_emotional_support(route: InterviewRouteResult) -> bool:
         if route.needs_emotional_support:
             return True
-        if route.emotion_type and route.emotion_type != "none":
+        if route.emotion_type in EMOTIONAL_SUPPORT_TYPES:
             return True
-        return bool(route.should_change_topic or route.do_not_probe_current_topic)
+        return False
 
     @staticmethod
     def _append_emotional_support_prompt(prompt: str, route: InterviewRouteResult) -> str:
         if not route.needs_emotional_support:
             return prompt
         base_prompt = InterviewAgentService._extract_text_block(
-            InterviewAgentService._load_skill_prompt(EMOTION_BASE_PROMPT)
+            InterviewAgentService._load_interview_prompt(EMOTION_BASE_PROMPT)
         )
         emotion_prompt = InterviewAgentService._extract_text_block(
-            InterviewAgentService._load_skill_prompt(
+            InterviewAgentService._load_interview_prompt(
                 InterviewAgentService._emotion_prompt_for_type(route.emotion_type)
             )
         )
@@ -526,7 +579,7 @@ class InterviewAgentService:
         data: dict[str, Any] = json.loads(raw.strip())
         result = InterviewStageDetectionResult.model_validate(data)
         result.stage_code = result.stage_code if result.stage_code in VALID_STAGE_IDS else "unclear"
-        result.stage_name = STAGE_NAME_BY_ID[result.stage_code]
+        result.stage_name = STAGE_NAME_BY_ID.get(result.stage_code, result.stage_name or result.stage_code)
         result.judgment_reason = result.judgment_reason.strip()[:80]
         return result
 
@@ -561,6 +614,10 @@ class InterviewAgentService:
             if question_id in MAIN_QUESTION_IDS and question_id not in result:
                 result.append(question_id)
         return result
+
+    @staticmethod
+    def _main_question_ids_for_stage(stage_id: str) -> tuple[int, ...]:
+        return STAGE_MAIN_QUESTION_IDS.get(stage_id, MAIN_QUESTION_IDS)
 
     @staticmethod
     def _format_main_question_ids(question_ids: list[int]) -> str:
@@ -598,14 +655,8 @@ class InterviewAgentService:
         return prompt
 
     @staticmethod
-    def _load_skill_prompt(name: str) -> str:
-        raw_path = Path(name)
-        path = raw_path if raw_path.is_absolute() else SKILL_DIR / raw_path
-        if not path.is_file():
-            path = SKILL_REFERENCES_DIR / name
-        if not path.is_file():
-            raise FileNotFoundError(f"Skill prompt not found: {path}")
-        return path.read_text(encoding="utf-8").strip()
+    def _load_interview_prompt(name: str) -> str:
+        return load_prompt(name)
 
     @staticmethod
     def _extract_text_block(markdown: str) -> str:

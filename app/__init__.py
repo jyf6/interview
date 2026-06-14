@@ -1,2 +1,1 @@
-"""Interview agent demo application."""
-
+"""Interview agent application."""
