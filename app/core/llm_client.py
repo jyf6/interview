@@ -56,6 +56,23 @@ class LLMClient:
         content = response.content if hasattr(response, "content") else str(response)
         return content.strip() if isinstance(content, str) else str(content)
 
+    async def chat_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+    ) -> Any:
+        """流式调用 LLM，返回异步生成器，逐 token 产出文本片段。"""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ]
+        return self.get_llm(temperature=temperature, max_tokens=max_tokens).astream(messages)
+
     def chat_json(
         self,
         system_prompt: str,

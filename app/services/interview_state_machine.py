@@ -12,25 +12,25 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.config import settings
 from app.core.perf import perf_span
-from app.data.interview_cards import CARD_RESPONSE_CORPUS, ENTRY_CARDS, GUIDANCE_CARDS, normalize_card_id
+from app.data.interview_cards import CARD_RESPONSE_CORPUS, ENTRY_CARDS, normalize_card_id
 from app.schemas.interview import (
     DialogActionRequest,
     DialogMessage,
     DialogTextRequest,
     DialogTurnResponse,
-    EntryCardSelection,
-    GuidanceCardResponse,
-    GuidanceCardSelection,
     InterviewCard,
     InterviewContext,
     InterviewState,
     InterviewStateResponse,
-    StartInterviewResponse,
     UserInfoRequest,
     UserInfoResponse,
 )
 from app.services.dashscope_llm import DashScopeLLM
-from app.services.interview_agent_service import InterviewAgentService, InterviewRouteResult
+from app.services.interview_agent_service import (
+    InterviewAgentService,
+    InterviewRouteResult,
+    SUPPLEMENT_QUESTION_ID,
+)
 from app.services.langgraph_redis_checkpoint import RedisCheckpointSaver
 from app.services.opening_service import OpeningService
 from app.prompts.interview_prompts import STAGE_MAIN_QUESTION_IDS
@@ -203,23 +203,13 @@ class InterviewStateMachine:
         self.interview_agent = InterviewAgentService(checkpointer=RedisCheckpointSaver(redis))
         self.opening = OpeningService()
 
-    async def start(self) -> StartInterviewResponse:
-        response = await self.start_dialog()
-        return StartInterviewResponse(
-            session_id=response.session_id,
-            current_state=response.current_state,
-            cards=response.cards,
-            assistant_message=response.message.content if response.message else "",
-            guidance_round=response.guidance_round,
-            max_guidance_rounds=response.max_guidance_rounds,
-        )
-
     async def start_dialog(self, session_id: str | None = None, user_id: str | None = None) -> DialogTurnResponse:
+        """创建/恢复会话，返回元数据（不含开场白文本，开场白由 stream_opening 流式输出）。"""
         with perf_span("dialog.start", has_session=bool(session_id)):
             context = await self._get_or_create_context(session_id)
+            if session_id and self._current_state(context) == "INTERVIEWING":
+                return await self._resume_interview_dialog(context)
             await self._transition(context, "OPENING_GENERATING")
-            userinfo = await self._get_userinfo(user_id) if user_id else {}
-            opening_message = await self.opening.build_opening_message(userinfo=userinfo)
             await self._transition(context, "OPENING_DELIVERED")
             guidance_round = await self._get_guidance_round(context.session_id)
 
@@ -228,14 +218,40 @@ class InterviewStateMachine:
             current_state=self._current_state(context),
             previous_state=context.previous_state,
             action="show_entry_cards",
-            message=opening_message,
-            cards=self.opening.build_entry_cards(),
-            card_group="entry",
+            message=None,
+            cards=[],
+            card_group="none",
             guidance_round=guidance_round,
             max_guidance_rounds=MAX_GUIDANCE_ROUNDS,
             can_continue_guidance=guidance_round < MAX_GUIDANCE_ROUNDS,
             response_source="none",
             state_interview=await self._get_or_create_interview_progress(context.session_id),
+        )
+
+    async def save_opening_message(self, session_id: str, content: str) -> None:
+        """将完整的开场白文本存入消息历史。"""
+        await self._append_message(session_id, "assistant", content)
+
+    async def _resume_interview_dialog(self, context: InterviewContext) -> DialogTurnResponse:
+        progress = await self._get_or_create_interview_progress(context.session_id)
+        guidance_round = await self._get_guidance_round(context.session_id)
+        messages = await self._get_messages(context.session_id)
+        resume_message = self._build_resume_message(progress, messages)
+        context.updated_at = datetime.now(UTC)
+        await self._save_state(context)
+        return DialogTurnResponse(
+            session_id=context.session_id,
+            current_state=self._current_state(context),
+            previous_state=context.previous_state,
+            action="resume_interview",
+            message=DialogMessage(content=resume_message),
+            cards=[],
+            card_group="none",
+            guidance_round=guidance_round,
+            max_guidance_rounds=MAX_GUIDANCE_ROUNDS,
+            can_continue_guidance=False,
+            response_source="none",
+            state_interview=progress,
         )
 
     async def handle_dialog_action(self, payload: DialogActionRequest) -> DialogTurnResponse:
@@ -288,13 +304,19 @@ class InterviewStateMachine:
             if progress.get("awaiting_stage_completion") and progress.get("supplement_answered"):
                 progress = await self._complete_awaiting_stage_if_needed(context, progress)
             stage_description = self._stage_description(progress)
-            stage_detection = await self.interview_agent.detect_user_stage(user_message=user_content)
-            progress = self._apply_initial_detected_stage(progress, stage_detection, history)
-            await self._assign_latest_user_message_stage(
-                context.session_id,
-                str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE),
-            )
-            progress = self._apply_detected_stage_mention(progress, stage_detection, user_content)
+            if not self._is_low_information_stage_signal(user_content):
+                stage_detection = await self.interview_agent.detect_user_stage(user_message=user_content)
+                progress = self._apply_initial_detected_stage(progress, stage_detection, history)
+                await self._assign_latest_user_message_stage(
+                    context.session_id,
+                    str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE),
+                )
+                progress = self._apply_detected_stage_mention(progress, stage_detection, user_content)
+            else:
+                await self._assign_latest_user_message_stage(
+                    context.session_id,
+                    str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE),
+                )
             progress = self._set_turn_transition_hint(progress, route_name=None, history=history)
             stage_description = self._stage_description(progress)
 
@@ -348,36 +370,6 @@ class InterviewStateMachine:
             can_continue_guidance=False,
             response_source=response_source,
             state_interview=progress,
-        )
-
-    async def select_entry_card(self, payload: EntryCardSelection) -> StartInterviewResponse:
-        response = await self.handle_dialog_action(
-            DialogActionRequest(session_id=payload.session_id, card_id=payload.card_id)
-        )
-        return StartInterviewResponse(
-            session_id=response.session_id,
-            current_state=response.current_state,
-            cards=response.cards,
-            guidance_cards=response.cards if response.card_group == "guidance" else [],
-            assistant_message=response.message.content if response.message else "",
-            guidance_round=response.guidance_round,
-            max_guidance_rounds=response.max_guidance_rounds,
-        )
-
-    async def select_guidance_card(self, payload: GuidanceCardSelection) -> GuidanceCardResponse:
-        response = await self.handle_dialog_action(
-            DialogActionRequest(session_id=payload.session_id, card_id=payload.card_id)
-        )
-        return GuidanceCardResponse(
-            session_id=response.session_id,
-            assistant_message=response.message.content if response.message else "",
-            next_cards=response.cards,
-            recommended_next_state=response.current_state,
-            current_state=response.current_state,
-            guidance_round=response.guidance_round,
-            max_guidance_rounds=response.max_guidance_rounds,
-            can_continue_guidance=response.can_continue_guidance,
-            response_source=response.response_source if response.response_source != "none" else "fallback",
         )
 
     async def get_state(self, session_id: str) -> InterviewStateResponse:
@@ -456,7 +448,7 @@ class InterviewStateMachine:
             previous_state=context.previous_state,
             action="show_guidance_cards",
             message=DialogMessage(content="没关系，您可以先选一个最接近现在感受的卡片，我会把接下来的问题调得更轻一点。"),
-            cards=self._cards(GUIDANCE_CARDS),
+            cards=[],
             card_group="guidance",
             guidance_round=guidance_round,
             max_guidance_rounds=MAX_GUIDANCE_ROUNDS,
@@ -929,6 +921,34 @@ class InterviewStateMachine:
             "cross_stage_mentions": cross_stage_mentions,
             "cross_stage_current": cross_stage_current,
         }
+
+    @staticmethod
+    def _is_low_information_stage_signal(user_content: str) -> bool:
+        normalized = user_content.strip().lower().strip("。.!！?？…~～ ")
+        if not normalized:
+            return True
+        if len(normalized) <= 3:
+            return True
+        markers = (
+            "可以继续",
+            "继续",
+            "接着",
+            "往下",
+            "下一步",
+            "不知道",
+            "不清楚",
+            "不记得",
+            "记不清",
+            "想不起来",
+            "忘了",
+            "没什么",
+            "差不多",
+            "都行",
+            "随便",
+            "没有了",
+            "没了",
+        )
+        return normalized in markers
 
     @staticmethod
     def _build_cross_stage_current(
@@ -1581,6 +1601,39 @@ class InterviewStateMachine:
             for message in messages
             if "stage_id" not in message
         ]
+
+    @staticmethod
+    def _build_resume_message(progress: dict[str, Any], messages: list[dict[str, str]]) -> str:
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        stage_name = InterviewStateMachine._stage_name(stage_id) or stage_id
+        last_assistant_message = InterviewStateMachine._last_message_content(messages, "assistant")
+        active_question_id = InterviewStateMachine._valid_main_question_id_for_stage(
+            progress.get("active_main_question_id"),
+            stage_id,
+        )
+        question_text = f"上次我问到：{last_assistant_message}" if last_assistant_message else "我们可以接着上次的地方慢慢聊。"
+
+        if int(progress.get("completed", 0)):
+            return "欢迎回来，这次采访已经完成了。您可以回看刚才整理下来的内容，也可以之后再开启新的补充采访。"
+
+        if active_question_id == SUPPLEMENT_QUESTION_ID or int(progress.get("awaiting_stage_completion", 0)):
+            return f"欢迎回来。上次{stage_name}阶段的主要内容已经聊得比较完整了，{question_text}"
+
+        if active_question_id is None:
+            return f"欢迎回来，我们可以继续顺着上次那段经历慢慢说。{question_text}"
+
+        transition_hint = str(progress.get("stage_transition_hint") or "")
+        if "上一阶段" in transition_hint or "曾提到" in transition_hint:
+            return f"欢迎回来。我们上次已经接到{stage_name}阶段了，可以顺着这个节奏继续。{question_text}"
+
+        return f"欢迎回来，我们接着上次的节奏慢慢聊。{question_text}"
+
+    @staticmethod
+    def _last_message_content(messages: list[dict[str, str]], role: str) -> str:
+        for message in reversed(messages):
+            if message.get("role") == role and message.get("content"):
+                return str(message["content"])
+        return ""
 
     async def _assign_latest_user_message_stage(self, session_id: str, stage_id: str) -> None:
         if stage_id not in INTERVIEW_STAGE_BY_ID:

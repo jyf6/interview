@@ -2,13 +2,41 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   getInterviewState,
-  getOnboardingGuide,
   getUserInfo,
   saveUserInfo,
   sendDialogAction,
   sendDialogText,
   startDialog,
+  streamOpening,
 } from './api/interview'
+
+const ENTRY_CARDS = [
+  { card_id: 'start_interview', label: '直接开始采访' },
+  { card_id: 'need_guidance', label: '我还有点顾虑' },
+]
+
+const GUIDANCE_CARDS = [
+  { card_id: 'relaxed_slow', label: '我想放松一点，慢慢回忆' },
+  { card_id: 'emotional_memory', label: '有些回忆让我有点感慨' },
+  { card_id: 'unknown_process', label: '我不太了解采访会怎么进行' },
+  { card_id: 'restrained', label: '我不太习惯表达，怕讲不好' },
+  { card_id: 'enthusiastic', label: '我愿意分享，可以直接聊' },
+  { card_id: 'scattered', label: '我思绪有点乱，不知道从哪里说起' },
+  { card_id: 'custom_question', label: '我想自己提一个问题' },
+]
+
+const ONBOARDING_GUIDE = {
+  guide_id: 'interview-dialog-onboarding',
+  version: '1.0.0',
+  title: '采访助手使用引导',
+  steps: [
+    { step_id: 'chat_panel', sequence: 1, title: '这里是对话区', body: '开场白、安抚回复、采访问题和你的选择都会按聊天形式展示在这里。', target_key: 'chat_panel', placement: 'center', primary_action_label: '知道了' },
+    { step_id: 'entry_cards', sequence: 2, title: '选择如何开始', body: '点击“直接开始采访”会进入正式采访；如果还没想好，可以先点击引导卡片慢慢准备。', target_key: 'card_options', placement: 'top', primary_action_label: '下一步' },
+    { step_id: 'composer', sequence: 3, title: '在这里发送回答', body: '进入正式采访后，底部输入框会解锁。输入内容后点击发送，AI 会按当前采访阶段继续追问。', target_key: 'composer', placement: 'top', primary_action_label: '下一步' },
+    { step_id: 'reset', sequence: 4, title: '可以重新开始', body: '如果想重新体验开场白和卡片流程，可以点击这里创建一轮新的会话。', target_key: 'reset_button', placement: 'bottom', primary_action_label: '下一步' },
+    { step_id: 'skip', sequence: 5, title: '随时退出引导', body: '点击引导外层或“跳过”即可关闭说明，不会影响当前采访会话。', target_key: 'guide_skip_button', placement: 'top', primary_action_label: '完成' },
+  ],
+}
 
 const loading = ref(false)
 const error = ref('')
@@ -23,6 +51,7 @@ const maxGuidanceRounds = ref(3)
 const interviewState = ref({})
 const cards = ref([])
 const messages = ref([])
+const streamingOpening = ref('')
 const inputText = ref('')
 const customQuestion = ref('')
 const customQuestionOpen = ref(false)
@@ -93,19 +122,31 @@ const interviewStageTitle = computed(() => activeInterviewStage.value?.title ?? 
 const interviewStageDescription = computed(() => {
   return activeInterviewStage.value?.description ?? '开始采访后，这里会显示当前所处阶段和采访节奏。'
 })
-const interviewRemainingText = computed(() => {
-  const completedIds = Array.isArray(interviewState.value?.completed_main_question_ids)
-    ? interviewState.value.completed_main_question_ids
-    : []
-  return String(Math.max(0, 8 - completedIds.length))
+const activeStageFlowEntry = computed(() => {
+  const flow = Array.isArray(interviewState.value?.stage_flow) ? interviewState.value.stage_flow : []
+  return flow.find((item) => item?.stage_id === interviewStageText.value) ?? null
+})
+const interviewStageCompletedCount = computed(() => {
+  const completedIds = Array.isArray(activeStageFlowEntry.value?.completed_main_question_ids)
+    ? activeStageFlowEntry.value.completed_main_question_ids
+    : Array.isArray(interviewState.value?.completed_main_question_ids)
+      ? interviewState.value.completed_main_question_ids
+      : []
+  return completedIds.length
 })
 const interviewAwaitingStageCompletion = computed(() => String(interviewState.value?.awaiting_stage_completion ?? 0) === '1')
 const interviewCompletedText = computed(() => String(interviewState.value?.completed ?? 0) === '1' ? '已完成' : '进行中')
+const interviewStageProgressText = computed(() => {
+  if (interviewCompletedText.value === '已完成') return '采访已完成'
+  if (interviewAwaitingStageCompletion.value) return '本阶段主问题已收集完成，等待补充收尾'
+  if (interviewStageCompletedCount.value > 0) return `本阶段已收集 ${interviewStageCompletedCount.value} 个主问题`
+  return '本阶段主问题逐步推进中'
+})
 const interviewStageStatusText = computed(() => {
   if (interviewCompletedText.value === '已完成') return '已完成'
   if (!activeInterviewStage.value) return '待开始'
-  if (interviewAwaitingStageCompletion.value) return `${interviewStageText.value} · 等待本阶段最后回答`
-  return `${interviewStageText.value} · 剩余 ${interviewRemainingText.value} 个主问题`
+  if (interviewAwaitingStageCompletion.value) return '等待收尾'
+  return '进行中'
 })
 const canType = computed(() => currentState.value === 'READY_TO_INTERVIEW' || currentState.value === 'INTERVIEWING')
 const cardsTitle = computed(() => {
@@ -174,12 +215,16 @@ function applyTurn(data) {
   sessionId.value = data.session_id
   currentState.value = data.current_state
   previousState.value = data.previous_state || ''
-  cardGroup.value = data.card_group
+  cardGroup.value = data.card_group ?? cardGroup.value
   responseSource.value = data.response_source
   guidanceRound.value = data.guidance_round
   maxGuidanceRounds.value = data.max_guidance_rounds
   interviewState.value = data.state_interview || interviewState.value || {}
-  cards.value = data.cards || []
+  if (data.cards?.length) {
+    cards.value = data.cards
+  } else if (data.action === 'show_guidance_cards') {
+    cards.value = [...GUIDANCE_CARDS]
+  }
 
   if (data.message?.content) {
     appendMessage(data.message.role || 'assistant', data.message.content)
@@ -216,20 +261,15 @@ async function run(actionFn) {
   }
 }
 
-async function startOnboardingGuide() {
-  try {
-    const guide = await getOnboardingGuide()
-    if (!guide?.steps?.length) return
-    onboardingGuide.value = {
-      ...guide,
-      steps: [...guide.steps].sort((a, b) => a.sequence - b.sequence),
-    }
-    onboardingActive.value = true
-    onboardingIndex.value = 0
-    refreshOnboardingTarget()
-  } catch (err) {
-    console.warn('Failed to load onboarding guide', err)
+function startOnboardingGuide() {
+  const guide = ONBOARDING_GUIDE
+  onboardingGuide.value = {
+    ...guide,
+    steps: [...guide.steps].sort((a, b) => a.sequence - b.sequence),
   }
+  onboardingActive.value = true
+  onboardingIndex.value = 0
+  refreshOnboardingTarget()
 }
 
 async function resetDialog() {
@@ -245,11 +285,40 @@ async function resetDialog() {
     maxGuidanceRounds.value = 3
     cards.value = []
     messages.value = []
+    streamingOpening.value = ''
     userInfoSavedAt.value = ''
     appendMessage('system', '正在准备采访开场...')
     const data = await startDialog(null, userId.value.trim())
     applyTurn(data)
     await loadUserInfo()
+    startStatePolling()
+    // 流式获取开场白
+    await streamOpening(data.session_id, userId.value.trim(), {
+      onToken: (_token, fullText) => {
+        streamingOpening.value = fullText
+        scrollToBottom()
+      },
+      onComplete: (fullText) => {
+        streamingOpening.value = ''
+        appendMessage('assistant', fullText)
+        cards.value = [...ENTRY_CARDS]
+        cardGroup.value = 'entry'
+      },
+    })
+  })
+}
+
+async function simulateResumeDialog() {
+  if (!sessionId.value || loading.value || currentState.value !== 'INTERVIEWING') return
+  await run(async () => {
+    stopStatePolling()
+    cards.value = []
+    cardGroup.value = 'none'
+    customQuestionOpen.value = false
+    appendMessage('system', '已模拟离开页面，现在使用同一个会话重新进入。')
+    const data = await startDialog(sessionId.value, userId.value.trim())
+    applyTurn(data)
+    await refreshState()
     startStatePolling()
   })
 }
@@ -439,16 +508,27 @@ onBeforeUnmount(() => {
             <p class="eyebrow">Interview Guidance</p>
             <h1>传记采访引导</h1>
           </div>
-          <button
-            class="icon-button"
-            type="button"
-            :disabled="loading"
-            title="重新开始"
-            data-onboarding-target="reset_button"
-            @click="resetDialog"
-          >
-            重新开始
-          </button>
+          <div class="header-actions">
+            <button
+              class="icon-button"
+              type="button"
+              :disabled="loading || !sessionId || currentState !== 'INTERVIEWING'"
+              title="模拟用户退出后再次回来"
+              @click="simulateResumeDialog"
+            >
+              模拟重进
+            </button>
+            <button
+              class="icon-button"
+              type="button"
+              :disabled="loading"
+              title="重新开始"
+              data-onboarding-target="reset_button"
+              @click="resetDialog"
+            >
+              重新开始
+            </button>
+          </div>
         </header>
 
         <section class="interview-stage-banner" aria-label="当前采访状态">
@@ -462,6 +542,7 @@ onBeforeUnmount(() => {
           <p>{{ interviewStageDescription }}</p>
           <div class="stage-meta">
             <span>{{ interviewStageStatusText }}</span>
+            <span>{{ interviewStageProgressText }}</span>
             <span>流程状态：{{ stateLabel }}</span>
             <span>来源：{{ responseSource }}</span>
           </div>
@@ -489,9 +570,14 @@ onBeforeUnmount(() => {
             </div>
           </article>
 
-          <article v-if="loading" class="message-row assistant">
+          <article v-if="loading && !streamingOpening" class="message-row assistant">
             <div class="avatar">记</div>
             <div class="bubble thinking">正在思考...</div>
+          </article>
+
+          <article v-if="streamingOpening" class="message-row assistant">
+            <div class="avatar">记</div>
+            <div class="bubble streaming">{{ streamingOpening }}<span class="cursor">▌</span></div>
           </article>
         </section>
 
@@ -551,7 +637,7 @@ onBeforeUnmount(() => {
               <strong>{{ interviewStageTitle }}</strong>
             </div>
             <p>{{ interviewStageDescription }}</p>
-            <small>{{ interviewCompletedText }} · {{ interviewStageStatusText }}</small>
+            <small>{{ interviewCompletedText }} · {{ interviewStageProgressText }}</small>
           </div>
 
           <ol class="state-timeline">

@@ -13,23 +13,6 @@ InterviewState = Literal[
     "INTERVIEWING",
     "end",
 ]
-EntryCardId = Literal["start_interview", "need_guidance", "need_more_guidance"]
-GuidanceCardId = Literal[
-    "relaxed_slow",
-    "emotional_memory",
-    "unknown_process",
-    "restrained",
-    "enthusiastic",
-    "scattered",
-    "worry_privacy",
-    "dont_know_process",
-    "dont_know_start_point",
-    "worry_not_good_at_talking",
-    "want_example_first",
-    "need_guidance",
-    "need_more_guidance",
-    "custom_question",
-]
 DialogCardId = Literal[
     "start_interview",
     "need_guidance",
@@ -53,6 +36,7 @@ DialogAction = Literal[
     "show_guidance_cards",
     "ready_to_interview",
     "enter_interview",
+    "resume_interview",
 ]
 CardGroup = Literal["entry", "guidance", "none"]
 ResponseSource = Literal["llm", "fallback", "none"]
@@ -76,38 +60,6 @@ class InterviewContext(BaseModel):
     max_guidance_rounds: int = 3
     created_at: datetime
     updated_at: datetime
-
-
-class StartInterviewResponse(BaseModel):
-    session_id: str
-    current_state: InterviewState
-    cards: list[InterviewCard]
-    guidance_cards: list[InterviewCard] = Field(default_factory=list)
-    assistant_message: str
-    guidance_round: int
-    max_guidance_rounds: int
-
-
-class EntryCardSelection(BaseModel):
-    session_id: str | None = None
-    card_id: EntryCardId
-
-
-class GuidanceCardSelection(BaseModel):
-    session_id: str
-    card_id: GuidanceCardId
-
-
-class GuidanceCardResponse(BaseModel):
-    session_id: str
-    assistant_message: str
-    next_cards: list[InterviewCard]
-    recommended_next_state: InterviewState
-    current_state: InterviewState
-    guidance_round: int
-    max_guidance_rounds: int
-    can_continue_guidance: bool
-    response_source: Literal["llm", "fallback"] = "fallback"
 
 
 class DialogStartRequest(BaseModel):
@@ -157,22 +109,3 @@ class UserInfoRequest(BaseModel):
 class UserInfoResponse(BaseModel):
     user_id: str
     userinfo: dict[str, str] = Field(default_factory=dict)
-
-
-class OnboardingStep(BaseModel):
-    step_id: str
-    sequence: int
-    title: str
-    body: str
-    target_key: str
-    placement: Literal["top", "right", "bottom", "left", "center"] = "bottom"
-    primary_action_label: str = "下一步"
-
-
-class OnboardingGuideResponse(BaseModel):
-    guide_id: str
-    version: str
-    title: str
-    description: str
-    steps: list[OnboardingStep]
-    target_contract: dict[str, str]

@@ -59,6 +59,12 @@ textarea {
   background: #ffffff;
 }
 
+.header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .eyebrow {
   margin: 0 0 4px;
   color: #8a7e6d;
@@ -253,6 +259,20 @@ h2 {
 
 .thinking {
   color: #8a7e6d;
+}
+
+.streaming {
+  white-space: pre-wrap;
+}
+
+.cursor {
+  animation: blink 0.8s step-end infinite;
+  color: #b8860b;
+  font-weight: bold;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
 }
 
 .cards-section {

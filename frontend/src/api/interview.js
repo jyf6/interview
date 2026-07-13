@@ -53,6 +53,55 @@ export function saveUserInfo(userId, payload) {
   })
 }
 
-export function getOnboardingGuide() {
-  return request('/interview/onboarding/guide')
+/**
+ * 流式获取开场白，每收到一个 token 就调用 onToken(token)。
+ * 结束后调用 onComplete(fullText)。
+ */
+export async function streamOpening(sessionId, userId, { onToken, onComplete }) {
+  const params = new URLSearchParams()
+  if (userId) params.set('user_id', userId)
+  const url = `${API_BASE_URL}/interview/dialog/opening/${sessionId}?${params}`
+
+  const response = await fetch(url, {
+    headers: { Accept: 'text/event-stream' },
+  })
+  if (!response.ok) {
+    throw new Error(`Opening stream failed: ${response.status}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let fullText = ''
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (data === '[DONE]') {
+        onComplete?.(fullText)
+        return fullText
+      }
+      try {
+        const parsed = JSON.parse(data)
+        const token = parsed.token ?? ''
+        if (token) {
+          fullText += token
+          onToken?.(token, fullText)
+        }
+      } catch {
+        // skip malformed SSE data
+      }
+    }
+  }
+
+  onComplete?.(fullText)
+  return fullText
 }

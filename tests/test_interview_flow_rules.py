@@ -45,6 +45,17 @@ class MemoryRedis:
 
 
 class InterviewFlowRulesTest(unittest.TestCase):
+    def test_low_information_reply_is_not_used_for_stage_detection(self) -> None:
+        for text in ["可以继续", "可以继续。", "不知道", "记不清", "没什么", "差不多"]:
+            with self.subTest(text=text):
+                self.assertTrue(InterviewStateMachine._is_low_information_stage_signal(text))
+
+        self.assertFalse(
+            InterviewStateMachine._is_low_information_stage_signal(
+                "刚毕业做第一份业务工作时，我第一次独自去跑市场。"
+            )
+        )
+
     def test_format_history_keeps_recent_four_rounds_and_truncates_content(self) -> None:
         messages = [
             {"role": "user" if index % 2 == 0 else "assistant", "content": f"message-{index}-" + "x" * 800}
@@ -732,6 +743,59 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 {item["stage_id"]: item["status"] for item in restored["stage_flow"]},
                 {"S1": "completed", "S2": "completed", "S3": "active", "S4": "pending"},
             )
+
+        asyncio.run(run_case())
+
+    def test_resume_message_reuses_last_assistant_question(self) -> None:
+        message = InterviewStateMachine._build_resume_message(
+            {
+                "stage_id": "S1",
+                "completed": 0,
+                "active_main_question_id": 4,
+                "awaiting_stage_completion": 0,
+            },
+            [
+                {"role": "assistant", "content": "除了家人，还有谁对您影响很深？"},
+                {"role": "user", "content": "我想想。"},
+            ],
+        )
+
+        self.assertIn("欢迎回来", message)
+        self.assertIn("除了家人，还有谁对您影响很深？", message)
+
+    def test_start_dialog_resumes_interviewing_session_without_new_opening(self) -> None:
+        async def run_case() -> None:
+            service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
+            context = await service._create_context("session-resume")
+            await service._transition(context, "INTERVIEWING")
+            await service._set_interview_progress(
+                "session-resume",
+                {
+                    "stage_id": "S1",
+                    "completed": 0,
+                    "completed_stage_ids": [],
+                    "pending_stage_ids": [],
+                    "pending_stage_mentions": {},
+                    "cross_stage_mentions": [],
+                    "cross_stage_current": None,
+                    "awaiting_stage_completion": 0,
+                    "completed_main_question_ids": [1, 2],
+                    "active_main_question_id": 3,
+                    "supplement_answered": 0,
+                    "started_stage_id": "S1",
+                    "stage_flow": [{"stage_id": "S1", "status": "active"}],
+                },
+            )
+            await service._append_message("session-resume", "assistant", "小时候您最热衷做什么事？", stage_id="S1")
+
+            response = await service.start_dialog("session-resume")
+
+            self.assertEqual(response.action, "resume_interview")
+            self.assertEqual(response.current_state, "INTERVIEWING")
+            self.assertEqual(response.card_group, "none")
+            self.assertEqual(response.cards, [])
+            assert response.message is not None
+            self.assertIn("小时候您最热衷做什么事？", response.message.content)
 
         asyncio.run(run_case())
 
