@@ -2,10 +2,8 @@ import logging
 from datetime import datetime
 
 from app.core.llm_client import interview_llm
-from app.data.interview_cards import ENTRY_CARDS
 from app.prompts.interview_prompts import OPENING_SYSTEM_PROMPT, RETURNING_USER_OPENING_SYSTEM_PROMPT
 from app.prompts.loader import load_prompt, render_prompt
-from app.schemas.interview import InterviewCard
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +26,6 @@ class OpeningService:
                     yield token
 
         return token_generator()
-
-    def build_entry_cards(self) -> list[InterviewCard]:
-        return [InterviewCard(**card) for card in ENTRY_CARDS]
 
     @staticmethod
     def _build_system_prompt(userinfo: dict[str, str]) -> str:

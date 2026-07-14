@@ -83,7 +83,7 @@ needs_emotional_support 判断：
 - reason 只能基于文字内容。
 - needs_emotional_support 是布尔值；只有明显非正面情绪需要轻量安慰时为 true，普通不知道、记不清、短答、跑题不触发情绪处理。
 - do_not_probe_current_topic=true 表示不要继续追问当前话题；当前仍应输出 route=normal_interview。
-- 阶段识别由 `prompts/stage-detection.md` 单独完成，本提示词不要输出阶段字段。
+- 阶段内低信息、跨阶段引用等判断由父子图中的 `stage-route.md` 完成，本提示词不要输出阶段字段。
 
 【历史对话】
 {{历史对话}}

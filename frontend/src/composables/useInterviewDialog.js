@@ -19,8 +19,6 @@ export function useInterviewDialog() {
   const previousState = ref('')
   const cardGroup = ref('none')
   const responseSource = ref('none')
-  const guidanceRound = ref(0)
-  const maxGuidanceRounds = ref(3)
   const interviewState = ref({})
   const cards = ref([])
   const messages = ref([])
@@ -42,7 +40,6 @@ export function useInterviewDialog() {
   const stateText = computed(() => currentState.value || 'INIT')
   const stateLabel = computed(() => STATE_STEPS.find((item) => item.value === stateText.value)?.label ?? stateText.value)
   const currentStateIndex = computed(() => STATE_STEPS.findIndex((item) => item.value === stateText.value))
-  const roundText = computed(() => `${guidanceRound.value}/${maxGuidanceRounds.value}`)
   const interviewStageText = computed(() => interviewState.value?.stage_id ?? '-')
   const activeInterviewStage = computed(() => {
     return INTERVIEW_STAGES.find((item) => item.id === interviewStageText.value) ?? null
@@ -97,17 +94,8 @@ export function useInterviewDialog() {
     sessionId.value = data.session_id
     currentState.value = data.current_state
     previousState.value = data.previous_state || ''
-    cardGroup.value = data.card_group ?? cardGroup.value
     responseSource.value = data.response_source
-    guidanceRound.value = data.guidance_round
-    maxGuidanceRounds.value = data.max_guidance_rounds
     interviewState.value = data.state_interview || interviewState.value || {}
-
-    if (data.cards?.length) {
-      cards.value = data.cards
-    } else if (data.action === 'show_guidance_cards') {
-      cards.value = [...GUIDANCE_CARDS]
-    }
 
     if (data.message?.content) {
       appendMessage(data.message.role || 'assistant', data.message.content)
@@ -150,8 +138,6 @@ export function useInterviewDialog() {
       cardGroup.value = 'none'
       responseSource.value = 'none'
       interviewState.value = {}
-      guidanceRound.value = 0
-      maxGuidanceRounds.value = 3
       cards.value = []
       messages.value = []
       streamingOpening.value = ''
@@ -196,14 +182,29 @@ export function useInterviewDialog() {
       customQuestionOpen.value = true
       return
     }
+    const wasGuidanceCard = cardGroup.value === 'guidance'
     appendMessage('user', card.label)
     cards.value = []
+
+    if (card.card_id === 'need_guidance') {
+      appendMessage('assistant', '没关系，您可以先选一个最接近现在感受的卡片，我会把接下来的问题调得更轻一点。')
+      cards.value = [...GUIDANCE_CARDS]
+      cardGroup.value = 'guidance'
+      currentState.value = 'GUIDANCE_CARD'
+      return
+    }
+
     await run(async () => {
       const data = await sendDialogAction({
         session_id: sessionId.value,
         card_id: card.card_id,
+        selected_text: card.label,
       })
       applyTurn(data)
+      if (wasGuidanceCard) {
+        cards.value = [...ENTRY_CARDS]
+        cardGroup.value = 'entry'
+      }
       await refreshState()
     })
   }
@@ -219,9 +220,12 @@ export function useInterviewDialog() {
       const data = await sendDialogAction({
         session_id: sessionId.value,
         card_id: 'custom_question',
+        selected_text: question,
         question,
       })
       applyTurn(data)
+      cards.value = [...ENTRY_CARDS]
+      cardGroup.value = 'entry'
       await refreshState()
     })
   }
@@ -337,8 +341,6 @@ export function useInterviewDialog() {
     currentState,
     cardGroup,
     responseSource,
-    guidanceRound,
-    maxGuidanceRounds,
     cards,
     messages,
     streamingOpening,
@@ -352,7 +354,6 @@ export function useInterviewDialog() {
     stateText,
     stateLabel,
     currentStateIndex,
-    roundText,
     interviewStageText,
     interviewStageTitle,
     interviewStageDescription,

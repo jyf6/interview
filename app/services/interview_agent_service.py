@@ -14,7 +14,8 @@ from app.prompts.interview_prompts import (
     EMOTION_PROMPT_BY_TYPE,
     ICEBREAKER_PROMPT,
     ROUTING_JUDGEMENT_PROMPT,
-    STAGE_DETECTION_PROMPT,
+    STAGE_ROUTE_PROMPT,
+    STAGE_SUMMARY_PROMPT,
     STAGE_MAIN_QUESTION_IDS,
     STAGE_PROMPT_FILES,
 )
@@ -27,6 +28,14 @@ RouteName = Literal[
     "normal_interview",
     "extended_interview",
     "emotional_guidance",
+]
+StageRouteName = Literal[
+    "normal_answer",
+    "extended_probe",
+    "low_information",
+    "off_stage_reference",
+    "stage_complete",
+    "emotional_blocked",
 ]
 
 VALID_STAGE_IDS = {*STAGE_MAIN_QUESTION_IDS.keys(), "unclear"}
@@ -109,6 +118,15 @@ class InterviewStageDetectionResult(BaseModel):
     judgment_reason: str = ""
 
 
+class InterviewStageRouteResult(BaseModel):
+    route: StageRouteName = "normal_answer"
+    confidence: float = 0.0
+    reason: str = ""
+    missing_info: list[str] = Field(default_factory=list)
+    requested_stage_jump: str | None = None
+    can_probe: bool = True
+
+
 class InterviewTurnResult(BaseModel):
     reply: str
     route: InterviewRouteResult
@@ -184,36 +202,84 @@ class InterviewAgentService:
                 main_question_id=state.get("main_question_id"),
             )
 
-    async def judge_turn_route(
+    async def judge_stage_route(
         self,
         *,
         user_message: str,
-        recent_messages: list[dict[str, str]],
+        local_messages: list[dict[str, str]],
         stage_description: str,
         remaining_rounds: int,
-    ) -> InterviewRouteResult:
-        state = await self._route_turn(
-            {
-                "user_message": user_message,
-                "recent_messages": recent_messages,
-                "stage_description": stage_description,
-                "remaining_rounds": remaining_rounds,
-            }
+    ) -> InterviewStageRouteResult:
+        prompt = self._extract_text_block(self._load_interview_prompt(STAGE_ROUTE_PROMPT))
+        prompt = (
+            prompt.replace("{{stage_description}}", stage_description)
+            .replace("{{local_history}}", self._format_history(local_messages, limit=None))
+            .replace("{{remaining_rounds}}", str(max(0, remaining_rounds)))
+            .replace("{{user_message}}", user_message)
         )
-        return self._route_from_state(state)
-
-    async def detect_user_stage(self, *, user_message: str) -> InterviewStageDetectionResult:
-        prompt = self._extract_text_block(self._load_interview_prompt(STAGE_DETECTION_PROMPT))
-        prompt = prompt.replace("{{用户文本}}", user_message)
-        with perf_span("llm.interview.stage_detection", model=interview_llm.model, chars=len(user_message)):
+        with perf_span("llm.interview.stage_route", model=interview_llm.model, chars=len(user_message)):
             raw = await asyncio.to_thread(
                 interview_llm.chat,
                 "你只输出严格 JSON，不输出 Markdown。",
                 prompt,
                 temperature=0.1,
+                max_tokens=512,
+            )
+        return self._parse_stage_route(raw)
+
+    async def generate_low_information_reply(
+        self,
+        *,
+        user_message: str,
+        local_messages: list[dict[str, str]],
+        stage_description: str,
+    ) -> str:
+        prompt = "\n".join(
+            [
+                "你是温和的人生故事采访者。",
+                "用户当前回复信息量较低，请不要批评、不要追问过多。",
+                "请先降低压力，再给出一个更小、更容易回答的入口问题。",
+                "只输出一句自然口语化采访回复，不要输出解释。",
+                "",
+                f"当前阶段：{stage_description}",
+                f"阶段内历史：{self._format_history(local_messages, limit=6)}",
+                f"用户回复：{user_message}",
+            ]
+        )
+        with perf_span("llm.interview.low_information_reply", model=interview_llm.model, chars=len(user_message)):
+            raw = await asyncio.to_thread(
+                interview_llm.chat,
+                "你只输出采访者下一句话。",
+                prompt,
+                temperature=0.5,
                 max_tokens=256,
             )
-        return self._parse_stage_detection(raw)
+        return self._normalize_reply(raw)
+
+    async def summarize_stage(
+        self,
+        *,
+        stage_id: str,
+        stage_description: str,
+        local_messages: list[dict[str, str]],
+        global_outline: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        prompt = self._extract_text_block(self._load_interview_prompt(STAGE_SUMMARY_PROMPT))
+        prompt = (
+            prompt.replace("{{stage_id}}", stage_id)
+            .replace("{{stage_description}}", stage_description)
+            .replace("{{local_history}}", self._format_history(local_messages, limit=None))
+            .replace("{{global_outline}}", json.dumps(global_outline or {}, ensure_ascii=False))
+        )
+        with perf_span("llm.interview.stage_summary", model=interview_llm.model, messages=len(local_messages)):
+            raw = await asyncio.to_thread(
+                interview_llm.chat,
+                "你只输出严格 JSON，不输出 Markdown。",
+                prompt,
+                temperature=0.2,
+                max_tokens=512,
+            )
+        return self._parse_stage_outcome(raw, stage_id=stage_id)
 
     async def generate_reply_for_route(
         self,
@@ -573,6 +639,40 @@ class InterviewAgentService:
     @staticmethod
     def _emotion_prompt_for_type(emotion_type: str) -> str:
         return EMOTION_PROMPT_BY_TYPE.get(emotion_type, EMOTION_PROMPT_BY_TYPE["unclear"])
+
+    @staticmethod
+    def _parse_stage_route(raw: str) -> InterviewStageRouteResult:
+        data: dict[str, Any] = json.loads(raw.strip())
+        result = InterviewStageRouteResult.model_validate(data)
+        if result.requested_stage_jump not in VALID_STAGE_IDS:
+            result.requested_stage_jump = None
+        result.reason = result.reason.strip()[:120]
+        result.missing_info = [str(item).strip()[:80] for item in result.missing_info if str(item).strip()][:6]
+        return result
+
+    @staticmethod
+    def _parse_stage_outcome(raw: str, *, stage_id: str) -> dict[str, Any]:
+        try:
+            data = json.loads(raw.strip())
+        except json.JSONDecodeError:
+            data = {"summary": raw.strip()}
+        if not isinstance(data, dict):
+            data = {"summary": str(data)}
+
+        def clean_list(value: Any, limit: int = 8) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            return [str(item).strip()[:120] for item in value if str(item).strip()][:limit]
+
+        return {
+            "stage_id": stage_id,
+            "summary": str(data.get("summary") or "").strip()[:240],
+            "key_events": clean_list(data.get("key_events")),
+            "key_people": clean_list(data.get("key_people")),
+            "emotional_notes": clean_list(data.get("emotional_notes")),
+            "unresolved_threads": clean_list(data.get("unresolved_threads")),
+            "bridge_hint": str(data.get("bridge_hint") or "").strip()[:160],
+        }
 
     @staticmethod
     def _parse_stage_detection(raw: str) -> InterviewStageDetectionResult:

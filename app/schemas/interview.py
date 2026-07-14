@@ -13,38 +13,12 @@ InterviewState = Literal[
     "INTERVIEWING",
     "end",
 ]
-DialogCardId = Literal[
-    "start_interview",
-    "need_guidance",
-    "need_more_guidance",
-    "relaxed_slow",
-    "emotional_memory",
-    "unknown_process",
-    "restrained",
-    "enthusiastic",
-    "scattered",
-    "worry_privacy",
-    "dont_know_process",
-    "dont_know_start_point",
-    "worry_not_good_at_talking",
-    "want_example_first",
-    "custom_question",
-]
 DialogAction = Literal[
     "append_message",
-    "show_entry_cards",
-    "show_guidance_cards",
     "ready_to_interview",
-    "enter_interview",
     "resume_interview",
 ]
-CardGroup = Literal["entry", "guidance", "none"]
 ResponseSource = Literal["llm", "fallback", "none"]
-
-
-class InterviewCard(BaseModel):
-    card_id: str
-    label: str
 
 
 class DialogMessage(BaseModel):
@@ -56,8 +30,6 @@ class InterviewContext(BaseModel):
     session_id: str
     state: str = "INIT"
     previous_state: InterviewState | None = None
-    guidance_round: int = 0
-    max_guidance_rounds: int = 3
     created_at: datetime
     updated_at: datetime
 
@@ -69,7 +41,8 @@ class DialogStartRequest(BaseModel):
 
 class DialogActionRequest(BaseModel):
     session_id: str | None = None
-    card_id: DialogCardId
+    card_id: str
+    selected_text: str | None = None
     question: str | None = None
 
 
@@ -84,11 +57,6 @@ class DialogTurnResponse(BaseModel):
     previous_state: InterviewState | None = None
     action: DialogAction
     message: DialogMessage | None = None
-    cards: list[InterviewCard] = Field(default_factory=list)
-    card_group: CardGroup = "none"
-    guidance_round: int
-    max_guidance_rounds: int
-    can_continue_guidance: bool
     response_source: ResponseSource = "none"
     state_interview: dict[str, object] = Field(default_factory=dict)
 

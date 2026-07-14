@@ -13,7 +13,8 @@ GUIDANCE_QA_SYSTEM_PROMPT: Final = "interview/guidance-qa-system.txt"
 
 ICEBREAKER_PROMPT: Final = "interview/icebreaker.txt"
 ROUTING_JUDGEMENT_PROMPT: Final = "interview/routing-judgement.md"
-STAGE_DETECTION_PROMPT: Final = "interview/stage-detection.md"
+STAGE_ROUTE_PROMPT: Final = "interview/stage-route.md"
+STAGE_SUMMARY_PROMPT: Final = "interview/stage-summary.md"
 
 EMOTION_BASE_PROMPT: Final = "interview/emotion/base.md"
 EMOTION_PROMPT_BY_TYPE: Final[dict[str, str]] = {

@@ -14,7 +14,7 @@ Code should reference prompt files through `app/prompts/interview_prompts.py`, n
 ## Formal Interview Flow
 
 - `routing-judgement.md`: route each user turn to normal interview, extended interview, or emotional-support fusion.
-- `stage-detection.md`: detect which S1-S5 stage the user's content belongs to.
+- `stage-route.md`: route a user turn inside the active stage subgraph, including low-information replies and off-stage references.
 - `s*-*-main-question.md`: stage-specific planned main-question prompts.
 - `s*-*-detail-followup.md`: stage-specific detail follow-up prompts for high-engagement extension.
 

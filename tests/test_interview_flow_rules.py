@@ -4,6 +4,7 @@ import unittest
 from datetime import UTC, datetime
 
 from app.schemas.interview import InterviewContext
+from app.graphs.interview_stage_subgraph import InterviewStageSubgraph, stage_route_counts_as_answer
 from app.services.interview_agent_service import (
     MAX_HISTORY_MESSAGE_CHARS,
     MAX_HISTORY_MESSAGES,
@@ -11,6 +12,7 @@ from app.services.interview_agent_service import (
     InterviewReplyResult,
     InterviewRouteResult,
     InterviewStageDetectionResult,
+    InterviewStageRouteResult,
 )
 from app.services.interview_state_machine import InterviewStateMachine
 from app.services.langgraph_redis_checkpoint import RedisCheckpointSaver
@@ -45,17 +47,6 @@ class MemoryRedis:
 
 
 class InterviewFlowRulesTest(unittest.TestCase):
-    def test_low_information_reply_is_not_used_for_stage_detection(self) -> None:
-        for text in ["可以继续", "可以继续。", "不知道", "记不清", "没什么", "差不多"]:
-            with self.subTest(text=text):
-                self.assertTrue(InterviewStateMachine._is_low_information_stage_signal(text))
-
-        self.assertFalse(
-            InterviewStateMachine._is_low_information_stage_signal(
-                "刚毕业做第一份业务工作时，我第一次独自去跑市场。"
-            )
-        )
-
     def test_format_history_keeps_recent_four_rounds_and_truncates_content(self) -> None:
         messages = [
             {"role": "user" if index % 2 == 0 else "assistant", "content": f"message-{index}-" + "x" * 800}
@@ -100,6 +91,80 @@ class InterviewFlowRulesTest(unittest.TestCase):
             InterviewAgentService._select_reply_node({"route": InterviewRouteResult(route="emotional_guidance")}),
             "normal_reply",
         )
+
+    def test_stage_subgraph_low_information_does_not_count_active_question(self) -> None:
+        async def run_case() -> None:
+            service = InterviewAgentService()
+
+            async def fake_judge_stage_route(**_: object) -> InterviewStageRouteResult:
+                return InterviewStageRouteResult(route="low_information", confidence=0.9)
+
+            async def fake_low_information_reply(**_: object) -> str:
+                return "That is okay. We can start with one small detail."
+
+            async def fail_generate_reply_for_route(**_: object) -> tuple[str, str, int | None]:
+                raise AssertionError("low information should not enter normal reply generation")
+
+            service.judge_stage_route = fake_judge_stage_route  # type: ignore[method-assign]
+            service.generate_low_information_reply = fake_low_information_reply  # type: ignore[method-assign]
+            service.generate_reply_for_route = fail_generate_reply_for_route  # type: ignore[method-assign]
+
+            graph = InterviewStageSubgraph(service)
+            state = await graph.run(
+                {
+                    "session_id": "session-stage-low",
+                    "stage_id": "S1",
+                    "local_messages": [],
+                    "user_message": "continue",
+                    "stage_description": "stage S1",
+                    "remaining_rounds": 5,
+                    "completed_main_question_ids": [],
+                    "active_main_question_id": 1,
+                }
+            )
+
+            self.assertFalse(stage_route_counts_as_answer(state["stage_route"]["route"]))
+            self.assertFalse(state["answer_counted"])
+            self.assertEqual(state["main_question_id"], None)
+            self.assertIn("small detail", state["assistant_message"])
+
+        asyncio.run(run_case())
+
+    def test_stage_subgraph_normal_answer_counts_active_question_for_next_prompt(self) -> None:
+        async def run_case() -> None:
+            service = InterviewAgentService()
+            captured_completed_ids: list[int] = []
+
+            async def fake_judge_stage_route(**_: object) -> InterviewStageRouteResult:
+                return InterviewStageRouteResult(route="normal_answer", confidence=0.9)
+
+            async def fake_generate_reply_for_route(**kwargs: object) -> tuple[str, str, int | None]:
+                captured_completed_ids.extend(kwargs["completed_main_question_ids"])  # type: ignore[arg-type]
+                return "Next question", "llm", 2
+
+            service.judge_stage_route = fake_judge_stage_route  # type: ignore[method-assign]
+            service.generate_reply_for_route = fake_generate_reply_for_route  # type: ignore[method-assign]
+
+            graph = InterviewStageSubgraph(service)
+            state = await graph.run(
+                {
+                    "session_id": "session-stage-normal",
+                    "stage_id": "S1",
+                    "local_messages": [],
+                    "user_message": "I lived with my grandparents by the river.",
+                    "stage_description": "stage S1",
+                    "remaining_rounds": 5,
+                    "completed_main_question_ids": [],
+                    "active_main_question_id": 1,
+                }
+            )
+
+            self.assertTrue(stage_route_counts_as_answer(state["stage_route"]["route"]))
+            self.assertTrue(state["answer_counted"])
+            self.assertEqual(captured_completed_ids, [1])
+            self.assertEqual(state["main_question_id"], 2)
+
+        asyncio.run(run_case())
 
     def test_langgraph_checkpoint_persists_turn_state(self) -> None:
         async def run_case() -> None:
@@ -792,8 +857,6 @@ class InterviewFlowRulesTest(unittest.TestCase):
 
             self.assertEqual(response.action, "resume_interview")
             self.assertEqual(response.current_state, "INTERVIEWING")
-            self.assertEqual(response.card_group, "none")
-            self.assertEqual(response.cards, [])
             assert response.message is not None
             self.assertIn("小时候您最热衷做什么事？", response.message.content)
 
@@ -896,7 +959,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
         self.assertEqual(updated["pending_stage_ids"], [])
         self.assertEqual(updated["stage_id"], "S3")
 
-    def test_cross_stage_mention_is_stored_and_forces_main_route(self) -> None:
+    def test_cross_stage_mention_is_stored_as_pending_stage(self) -> None:
         progress = {
             "stage_id": "S2",
             "completed": 0,
@@ -911,17 +974,12 @@ class InterviewFlowRulesTest(unittest.TestCase):
             detection,
             "退休后我和老伴搬到南昌，每天一起散步。",
         )
-        route = InterviewStateMachine._forced_cross_stage_route(updated)
-
         self.assertEqual(updated["stage_id"], "S2")
         self.assertEqual(updated["pending_stage_ids"], ["S4"])
         self.assertIn("S4", updated["pending_stage_mentions"])
         self.assertEqual(updated["cross_stage_current"]["stage_id"], "S4")
         self.assertEqual(updated["cross_stage_current"]["source_stage_id"], "S2")
         self.assertEqual(updated["cross_stage_mentions"][0]["stage_id"], "S4")
-        self.assertIsNotNone(route)
-        assert route is not None
-        self.assertEqual(route.route, "normal_interview")
 
     def test_cross_stage_mentions_are_visible_and_marked_used_on_stage_switch(self) -> None:
         async def run_case() -> None:
@@ -1189,6 +1247,80 @@ class InterviewFlowRulesTest(unittest.TestCase):
             self.assertEqual(updated["supplement_answered"], 0)
             self.assertIn("岁月阅历", updated["stage_transition_hint"])
             self.assertNotIn("S4", updated["pending_stage_mentions"])
+
+        asyncio.run(run_case())
+
+    def test_stage_completion_keeps_turn_messages_in_completed_stage(self) -> None:
+        async def run_case() -> None:
+            class FakeParentGraph:
+                async def run_turn(self, state: dict[str, object]) -> dict[str, object]:
+                    self.state = state
+                    progress = dict(state["progress"])  # type: ignore[arg-type]
+                    return {
+                        "progress": {
+                            **progress,
+                            "awaiting_stage_completion": 1,
+                            "supplement_answered": 1,
+                            "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                        },
+                        "stage_outcomes": {
+                            "S3": {
+                                "stage_id": "S3",
+                                "summary": "讲清楚了事业转折。",
+                                "bridge_hint": "承接到退休后的生活节奏。",
+                            }
+                        },
+                        "stage_complete": True,
+                        "stage_route": {"route": "stage_complete"},
+                        "legacy_route_name": "normal_interview",
+                        "assistant_message": "这一段我先帮您收束住。",
+                        "response_source": "llm",
+                    }
+
+            async def no_checkpoint(*_: object, **__: object) -> None:
+                return None
+
+            async def no_checkpointed_progress(*_: object, **__: object) -> None:
+                return None
+
+            service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
+            service.interview_graph = FakeParentGraph()  # type: ignore[assignment]
+            service.interview_agent.checkpoint_interview_progress = no_checkpoint  # type: ignore[method-assign]
+            service.interview_agent.get_checkpointed_interview_progress = no_checkpointed_progress  # type: ignore[method-assign]
+            context = await service._create_context("session-stage-complete")
+            await service._transition(context, "INTERVIEWING")
+            await service._set_interview_progress(
+                context.session_id,
+                {
+                    "stage_id": "S3",
+                    "completed": 0,
+                    "completed_stage_ids": ["S1", "S2"],
+                    "pending_stage_ids": ["S4"],
+                    "pending_stage_mentions": {},
+                    "cross_stage_mentions": [],
+                    "cross_stage_current": None,
+                    "awaiting_stage_completion": 1,
+                    "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+                    "active_main_question_id": 9,
+                    "supplement_answered": 0,
+                    "stage_flow": [
+                        {"stage_id": "S1", "status": "completed"},
+                        {"stage_id": "S2", "status": "completed"},
+                        {"stage_id": "S3", "status": "active"},
+                        {"stage_id": "S4", "status": "pending"},
+                    ],
+                    "stage_outcomes": {},
+                },
+            )
+
+            response = await service.handle_dialog_text(
+                DialogTextRequest(session_id=context.session_id, content="这段没有其他补充了。")
+            )
+            messages = await service._get_messages(context.session_id)
+
+            self.assertEqual(response.state_interview["stage_id"], "S4")
+            self.assertIn("承接到退休后的生活节奏", response.state_interview["stage_transition_hint"])
+            self.assertEqual([message["stage_id"] for message in messages], ["S3", "S3"])
 
         asyncio.run(run_case())
 
