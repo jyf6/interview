@@ -19,24 +19,28 @@ class InterviewParentGraph:
     """
 
     def __init__(self, agent: InterviewAgentService, *, checkpointer: Any | None = None) -> None:
+        # 创建子图和父图
         self.stage_subgraphs = {
             stage_id: InterviewStageSubgraph(agent, stage_id=stage_id, checkpointer=checkpointer)
             for stage_id in INTERVIEW_STAGE_IDS
         }
         self.graph = self._build_graph(checkpointer=checkpointer)
-
+# 给外界的访问接口
     async def run_turn(self, state: ParentState) -> ParentState:
         return await self.graph.ainvoke(state, self._graph_config(state.get("session_id")))
-
+# 检查当前图的状态//暂时没有使用
     async def get_checkpointed_state(self, session_id: str) -> dict[str, Any] | None:
+        # langgrpah方法根据id获取图最近一次的快照
         snapshot = await self.graph.aget_state(self._graph_config(session_id))
         return dict(snapshot.values) if isinstance(snapshot.values, dict) else None
-
+# 获取子图的状态
     async def get_stage_state(self, session_id: str, stage_id: str) -> dict[str, Any] | None:
         subgraph = self.stage_subgraphs.get(stage_id)
         if subgraph is None:
             return None
         return await subgraph.get_checkpointed_state(session_id, stage_id)
+# 删除快照
+# TODO：不知道在干什么
 
     async def delete_checkpoint_thread(self, session_id: str) -> None:
         checkpointer = getattr(self.graph, "checkpointer", None)
@@ -44,14 +48,16 @@ class InterviewParentGraph:
             await checkpointer.adelete_thread(f"interview-parent:{session_id}")
         for subgraph in self.stage_subgraphs.values():
             await subgraph.delete_checkpoint_thread(session_id)
-
+# 构建父图
     def _build_graph(self, *, checkpointer: Any | None = None) -> Any:
         graph = StateGraph(ParentState)
-        graph.add_node("select_stage", self._select_stage)
+        graph.add_node("select_stage", self._select_stage)  # 添加选择阶段节点
         graph.add_node("advance_stage", self._advance_stage)
+        # 根据子图的返回值决定下一步动作，可以认为是路由节点
+        # 子图
         for stage_id, subgraph in self.stage_subgraphs.items():
             graph.add_node(stage_id, subgraph.as_parent_node())
-        graph.set_entry_point("select_stage")
+        graph.set_entry_point("select_stage")  # 设置入口节点为选择阶段节点
         return graph.compile(checkpointer=checkpointer)
 
     @staticmethod
@@ -60,10 +66,14 @@ class InterviewParentGraph:
         return {"configurable": {"thread_id": f"interview-parent:{thread_id}"}}
 
     async def _select_stage(self, state: ParentState) -> Command:
+        # 检查如果已经完成采访就结束流转到结束节点
         if int(state.get("completed", 0)):
             return Command(goto=END)
+        # 获取当前所处阶段的id
         stage_id = self._stage_id_from_state(state)
-        update = self._enter_stage_update(state, stage_id, started_by="initial")
+
+        update = self._enter_stage_update(state, stage_id)
+        # 更新父状态，记录每个阶段的状态，那些开始了，那些还没开始，那些暂停了
         return Command(goto=stage_id, update=update)
 
     async def _advance_stage(self, state: ParentState) -> Command:
@@ -79,9 +89,9 @@ class InterviewParentGraph:
 
     @staticmethod
     def _stage_id_from_state(state: ParentState) -> str:
-        stage_id = str(state.get("stage_id") or state.get("current_stage") or FIRST_INTERVIEW_STAGE)
+        stage_id = str(state.get("stage_id") or FIRST_INTERVIEW_STAGE)
         return stage_id if stage_id in INTERVIEW_STAGE_BY_ID else FIRST_INTERVIEW_STAGE
-
+# 校验事件格式的正确性
     @staticmethod
     def _valid_stage_event(value: Any, fallback_stage_id: str) -> StageEvent:
         if not isinstance(value, dict):
@@ -116,7 +126,7 @@ class InterviewParentGraph:
             "stage_outcome": value.get("stage_outcome") if isinstance(value.get("stage_outcome"), dict) else {},
             "mention": str(value.get("mention") or "").strip()[:160],
         }
-
+# 通过事件进行更新父图的状态
     def _stay_stage_update(self, state: ParentState, event: StageEvent) -> ParentState:
         stage_id = event["stage_id"]
         return {
@@ -127,7 +137,6 @@ class InterviewParentGraph:
                 self._valid_stage_flow(state.get("stage_flow")),
                 stage_id,
                 "active",
-                started_by="state_machine",
             ),
             "assistant_message": event.get("assistant_message", ""),
             "response_source": event.get("response_source", "llm"),
@@ -144,7 +153,7 @@ class InterviewParentGraph:
         completed_stage_ids = set(self._stage_ids_by_status(flow, "completed"))
         if source_stage_id not in completed_stage_ids:
             flow = self._upsert_stage_flow_entry(flow, source_stage_id, "pending")
-        flow = self._upsert_stage_flow_entry(flow, target_stage_id, "active", started_by="jump")
+        flow = self._upsert_stage_flow_entry(flow, target_stage_id, "active")
         cross_stage_current = self._build_cross_stage_current(source_stage_id, target_stage_id, event.get("mention", ""))
         pending_mentions = self._valid_stage_mentions(state.get("pending_stage_mentions"))
         pending_mentions.pop(target_stage_id, None)
@@ -201,7 +210,7 @@ class InterviewParentGraph:
             pending_mentions=pending_mentions,
             stage_outcomes=stage_outcomes,
         )
-        flow = self._upsert_stage_flow_entry(flow, next_stage_id, "active", started_by="state_machine")
+        flow = self._upsert_stage_flow_entry(flow, next_stage_id, "active")
         return {
             **update,
             "stage_id": next_stage_id,
@@ -214,15 +223,15 @@ class InterviewParentGraph:
             "stage_transition_hint": transition_hint,
         }
 
-    def _enter_stage_update(self, state: ParentState, stage_id: str, *, started_by: str) -> ParentState:
+    def _enter_stage_update(self, state: ParentState, stage_id: str) -> ParentState:
         return {
             "stage_id": stage_id,
+            # 更新父状态
             "started_stage_id": state.get("started_stage_id") or stage_id,
             "stage_flow": self._upsert_stage_flow_entry(
                 self._valid_stage_flow(state.get("stage_flow")),
                 stage_id,
                 "active",
-                started_by=started_by,
             ),
         }
 
@@ -241,10 +250,10 @@ class InterviewParentGraph:
             if status not in {"not_started", "pending", "active", "completed"}:
                 status = "active"
             entry: dict[str, Any] = {"stage_id": stage_id, "status": status}
-            for key in ("started_by", "entered_at", "completed_at"):
+            for key in ("entered_at", "completed_at"):
                 value_text = str(item.get(key) or "").strip()
                 if value_text:
-                    entry[key] = value_text[:80] if key == "started_by" else value_text
+                    entry[key] = value_text
             if isinstance(item.get("completed_main_question_ids"), list):
                 entry["completed_main_question_ids"] = item["completed_main_question_ids"]
             result.append(entry)
@@ -255,8 +264,6 @@ class InterviewParentGraph:
         flow: list[dict[str, Any]],
         stage_id: str,
         status: str,
-        *,
-        started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         if stage_id not in INTERVIEW_STAGE_BY_ID:
             return flow
@@ -274,8 +281,6 @@ class InterviewParentGraph:
             "status": status,
             "entered_at": existing.get("entered_at") or now,
         }
-        if started_by:
-            entry["started_by"] = started_by
         if status == "completed":
             entry["completed_at"] = existing.get("completed_at") or now
         elif status == "active":

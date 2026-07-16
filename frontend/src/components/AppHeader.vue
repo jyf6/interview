@@ -9,6 +9,10 @@ defineProps({
   loading: Boolean,
   sessionId: String,
   currentState: String,
+  showActions: {
+    type: Boolean,
+    default: true,
+  },
 })
 
 defineEmits(['reset', 'resume'])
@@ -20,7 +24,7 @@ defineEmits(['reset', 'resume'])
       <p class="eyebrow">Interview Guidance</p>
       <h1>{{ title }}</h1>
     </div>
-    <div class="header-actions">
+    <div v-if="showActions" class="header-actions">
       <button
         class="tool-button"
         type="button"

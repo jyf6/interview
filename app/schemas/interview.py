@@ -18,7 +18,7 @@ DialogAction = Literal[
     "ready_to_interview",
     "resume_interview",
 ]
-ResponseSource = Literal["llm", "fallback", "none"]
+ResponseSource = Literal["llm", "rule", "none"]
 
 
 class DialogMessage(BaseModel):
@@ -39,6 +39,12 @@ class DialogStartRequest(BaseModel):
     user_id: str | None = None
 
 
+class InterviewSessionCreateRequest(BaseModel):
+    biography_id: str
+    outline_id: str
+    session_id: str | None = None
+
+
 class DialogActionRequest(BaseModel):
     session_id: str | None = None
     card_id: str
@@ -49,6 +55,14 @@ class DialogActionRequest(BaseModel):
 class DialogTextRequest(BaseModel):
     session_id: str | None = None
     content: str = Field(min_length=1)
+
+
+class ThreadCommandRequest(BaseModel):
+    session_id: str
+    command: Literal["push", "pop", "complete_point"]
+    diversion_id: str | None = None
+    target: str = ""
+    mention: str = ""
 
 
 class DialogTurnResponse(BaseModel):

@@ -2,13 +2,13 @@
 
 FastAPI + Redis + DashScope + Vue 3 application for the silver-age biography interview module.
 
-This version follows the current `jin` branch structure:
+This version implements an outline-driven, text-only biography interview flow:
 
-- Backend owns the Redis-backed state machine, opening dialog, guidance cards, and formal interview turns.
-- Frontend is only a lightweight test page that adapts to backend dialog endpoints.
-- Guidance-card generation and formal interview replies share `DASHSCOPE_INTERVIEW_MODEL`.
-- Interview prompts are managed in `app/prompts/interview/` and referenced through `app/prompts/interview_prompts.py`.
-- Formal interview replies use Redis-backed S0-S5 interview stages.
+- A typed highlight story generates a draft outline of chapters and collection points.
+- Draft outlines can be edited and published before an interview starts.
+- Redis stores resumable session state; SQLAlchemy ORM persists outlines and archived material in PostgreSQL.
+- Text turns follow hook, detail follow-up, meaning, and explainable close conditions.
+- Cross-topic memories use an interrupt/resume thread stack and are archived by target stage.
 
 ## Environment
 
@@ -32,17 +32,18 @@ Copy `.env.example` to `.env` and fill your local values:
 
 ```env
 REDIS_URL=redis://localhost:6379/0
+BIOGRAPHY_DATABASE_URL=postgresql://interview:interview@localhost:5432/interview
 DASHSCOPE_API_KEY=
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 DASHSCOPE_MODEL=qwen-plus
 DASHSCOPE_INTERVIEW_MODEL=qwen-plus
 ```
 
-`DASHSCOPE_INTERVIEW_MODEL` is used by the opening generator, guidance-card generator, and interview agent. If no DashScope key is configured, the backend returns local fallback replies so the flow can still be tested.
+`DASHSCOPE_API_KEY` and `DASHSCOPE_INTERVIEW_MODEL` are required. Missing configuration or any model invocation failure is returned as an error; the application does not generate local substitute content.
 
 ## Start
 
-Start Redis with Docker:
+Start PostgreSQL and Redis with Docker:
 
 ```powershell
 .\scripts\start-redis.bat
@@ -74,24 +75,30 @@ You can also start both windows together:
 
 ## Main Flow
 
-The frontend calls these dialog endpoints:
+The frontend calls these endpoints:
 
 ```http
-POST /api/v1/interview/dialog/start
-POST /api/v1/interview/dialog/actions
+POST /api/v1/biographies
+POST /api/v1/biographies/{biography_id}/highlight-sessions
+POST /api/v1/biographies/{biography_id}/highlight-sessions/{session_id}/messages
+GET  /api/v1/outlines/{outline_id}
+PUT  /api/v1/outlines/{outline_id}
+POST /api/v1/outlines/{outline_id}/publish
+POST /api/v1/interview/sessions
 POST /api/v1/interview/dialog/text
-GET  /api/v1/interview/onboarding/guide
+POST /api/v1/interview/sessions/{session_id}/commands
+GET  /api/v1/interview/sessions/{session_id}/materials
 ```
 
 Flow:
 
 ```text
-Opening message
-  -> entry cards
-  -> optional guidance cards
-  -> READY_TO_INTERVIEW
-  -> INTERVIEWING
-  -> S0-S5 interview stages
+Text highlight
+  -> draft outline
+  -> edit and publish
+  -> collection point interview
+  -> interrupt/resume and silent archive
+  -> next point
   -> end
 ```
 
@@ -113,7 +120,9 @@ Commands used for local verification:
 
 ```powershell
 .\.venv\Scripts\python.exe -m py_compile app\core\config.py app\core\llm_client.py app\prompts\loader.py app\schemas\interview.py app\services\dashscope_llm.py app\services\interview_agent_service.py app\services\interview_state_machine.py app\services\langgraph_redis_checkpoint.py app\services\opening_service.py app\api\v1\routes\interview.py app\main.py
+.\.venv\Scripts\python.exe -m pytest -q tests/test_biography_flow.py tests/test_collection_point_evaluator.py tests/test_semantic_router.py tests/test_thread_stack.py
 cd frontend
 npm.cmd run build
+docker compose -p interview-agent exec -T postgres pg_isready -U interview -d interview
 docker compose -p interview-agent exec -T redis redis-cli ping
 ```

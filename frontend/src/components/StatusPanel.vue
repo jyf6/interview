@@ -15,6 +15,10 @@ defineProps({
     default: () => [],
   },
   currentStateIndex: Number,
+  activePoint: {
+    type: Object,
+    default: null,
+  },
 })
 </script>
 
@@ -44,6 +48,7 @@ defineProps({
       </div>
       <p>{{ stageDescription }}</p>
       <small>{{ completedText }} · {{ progressText }}</small>
+      <small v-if="activePoint?.title">采集点：{{ activePoint.title }}</small>
     </div>
 
     <ol class="state-timeline">

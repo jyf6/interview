@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.v1.routes.interview_dependencies import get_interview_machine
@@ -9,10 +9,26 @@ from app.schemas.interview import (
     DialogStartRequest,
     DialogTextRequest,
     DialogTurnResponse,
+    InterviewSessionCreateRequest,
+    ThreadCommandRequest,
 )
 from app.services.interview_state_machine import InterviewStateMachine
 
 router = APIRouter()
+
+
+@router.post("/interview/sessions", response_model=DialogTurnResponse)
+async def create_interview_session(
+    payload: InterviewSessionCreateRequest,
+    machine: InterviewStateMachine = Depends(get_interview_machine),
+) -> DialogTurnResponse:
+    session_id = payload.session_id or f"session:{payload.biography_id}:{payload.outline_id}"
+    try:
+        return await machine.start_outline_session(session_id, payload.biography_id, payload.outline_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/interview/dialog/start", response_model=DialogTurnResponse)
@@ -59,3 +75,19 @@ async def handle_dialog_text(
     machine: InterviewStateMachine = Depends(get_interview_machine),
 ) -> DialogTurnResponse:
     return await machine.handle_dialog_text(payload)
+
+
+@router.post("/interview/sessions/{session_id}/commands", response_model=DialogTurnResponse)
+async def handle_thread_command(
+    session_id: str,
+    payload: ThreadCommandRequest,
+    machine: InterviewStateMachine = Depends(get_interview_machine),
+) -> DialogTurnResponse:
+    if payload.session_id != session_id:
+        raise HTTPException(status_code=400, detail="session_id_mismatch")
+    return await machine.handle_thread_command(payload)
+
+
+@router.get("/interview/sessions/{session_id}/materials")
+def list_session_materials(session_id: str, request: Request) -> list[dict[str, object]]:
+    return request.app.state.biography_store.list_materials(session_id)

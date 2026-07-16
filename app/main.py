@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.redis import close_redis, init_redis
+from app.services.biography_store import BiographyStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,10 +19,12 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.redis = init_redis()
+    app.state.biography_store = BiographyStore(settings.biography_database_url)
     try:
         yield
     finally:
         await close_redis(app.state.redis)
+        app.state.biography_store.close()
 
 
 def create_app() -> FastAPI:

@@ -1,24 +1,32 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Info, MessageCircle } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import { FileText, Info, MessageCircle } from 'lucide-vue-next'
 import AppHeader from './components/AppHeader.vue'
 import CardOptions from './components/CardOptions.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
 import InterviewStageBanner from './components/InterviewStageBanner.vue'
 import MessageComposer from './components/MessageComposer.vue'
 import OnboardingGuide from './components/OnboardingGuide.vue'
+import OutlineConsole from './components/OutlineConsole.vue'
 import StatusPanel from './components/StatusPanel.vue'
 import UserIdBar from './components/UserIdBar.vue'
 import UserInfoPanel from './components/UserInfoPanel.vue'
 import { useInterviewDialog } from './composables/useInterviewDialog'
 import { useOnboarding } from './composables/useOnboarding'
+import { useOutlineConsole } from './composables/useOutlineConsole'
 import { STATE_STEPS } from './constants/interviewUi'
 
 const dialog = useInterviewDialog()
+const outline = useOutlineConsole(dialog.userId)
 const onboarding = useOnboarding()
 const transcriptRef = ref(null)
-const activePage = ref('chat')
-const pageTitle = computed(() => (activePage.value === 'chat' ? '传记采访引导' : '采访信息'))
+const activePage = ref('outline')
+const pageTitle = computed(() => (activePage.value === 'chat' ? '传记采访引导' : activePage.value === 'outline' ? '传记大纲' : '采访信息'))
+
+async function startOutlineInterview() {
+  await dialog.startPublishedOutline(outline.biographyId.value, outline.outline.value?.id)
+  activePage.value = 'chat'
+}
 
 function scrollTranscript() {
   nextTick(() => {
@@ -26,37 +34,11 @@ function scrollTranscript() {
   })
 }
 
-function handleWindowChange() {
-  onboarding.refreshTarget()
-}
-
 watch(
   () => [dialog.messages.value.length, dialog.streamingOpening.value],
   () => scrollTranscript(),
 )
 
-watch(
-  () => [
-    dialog.cards.value.length,
-    dialog.currentState.value,
-    activePage.value,
-    onboarding.activeStep.value?.step_id,
-    onboarding.active.value,
-  ],
-  () => onboarding.refreshTarget(),
-)
-
-onMounted(async () => {
-  window.addEventListener('resize', handleWindowChange)
-  window.addEventListener('scroll', handleWindowChange, true)
-  await dialog.resetDialog()
-  onboarding.start()
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', handleWindowChange)
-  window.removeEventListener('scroll', handleWindowChange, true)
-})
 </script>
 
 <template>
@@ -74,6 +56,16 @@ onBeforeUnmount(() => {
         </button>
         <button
           type="button"
+          :class="{ active: activePage === 'outline' }"
+          :aria-current="activePage === 'outline' ? 'page' : undefined"
+          @click="activePage = 'outline'"
+        >
+          <FileText :size="18" aria-hidden="true" />
+          <span>大纲</span>
+        </button>
+        <button
+          type="button"
+          v-if="false"
           :class="{ active: activePage === 'info' }"
           :aria-current="activePage === 'info' ? 'page' : undefined"
           @click="activePage = 'info'"
@@ -89,8 +81,7 @@ onBeforeUnmount(() => {
           :loading="dialog.loading.value"
           :session-id="dialog.sessionId.value"
           :current-state="dialog.currentState.value"
-          @reset="dialog.resetDialog"
-          @resume="dialog.simulateResumeDialog"
+          :show-actions="false"
         />
 
         <div v-if="dialog.error.value" class="error-box">
@@ -125,6 +116,23 @@ onBeforeUnmount(() => {
         />
       </section>
 
+      <section v-else-if="activePage === 'outline'" class="outline-page">
+        <OutlineConsole
+          :outline="outline.outline.value"
+          :highlight-messages="outline.highlightMessages.value"
+          :highlight-input="outline.highlightInput.value"
+          :highlight-ready="outline.highlightReady.value"
+          :loading="outline.loading.value"
+          :error="outline.error.value"
+          @update:highlight-input="outline.highlightInput.value = $event"
+          @start-highlight="outline.startHighlight"
+          @send-highlight="outline.sendHighlight"
+          @save="outline.save"
+          @publish="outline.publish"
+          @start-session="startOutlineInterview"
+        />
+      </section>
+
       <section v-else class="info-page">
         <header class="info-header">
           <div>
@@ -145,6 +153,9 @@ onBeforeUnmount(() => {
           :progress-text="dialog.interviewStageProgressText.value"
           :state-label="dialog.stateLabel.value"
           :response-source="dialog.responseSource.value"
+          :active-point="dialog.activeCollectionPoint.value"
+          :can-complete-point="dialog.canCompleteCollectionPoint.value"
+          @complete-point="dialog.completeCollectionPoint"
         />
 
         <div v-if="dialog.error.value" class="error-box info-error">
@@ -172,6 +183,7 @@ onBeforeUnmount(() => {
             :progress-text="dialog.interviewStageProgressText.value"
             :state-steps="STATE_STEPS"
             :current-state-index="dialog.currentStateIndex.value"
+            :active-point="dialog.activeCollectionPoint.value"
           />
 
           <UserInfoPanel

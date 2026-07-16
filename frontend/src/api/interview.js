@@ -38,6 +38,52 @@ export function sendDialogText(payload) {
   })
 }
 
+export function sendSessionCommand(sessionId, payload) {
+  return request(`/interview/sessions/${sessionId}/commands`, {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId, ...payload }),
+  })
+}
+
+export function createBiography(intervieweeId = null) {
+  return request('/biographies', {
+    method: 'POST',
+    body: JSON.stringify({ interviewee_id: intervieweeId }),
+  })
+}
+
+export function startHighlightSession(biographyId, sessionId = null) {
+  return request(`/biographies/${biographyId}/highlight-sessions`, {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  })
+}
+
+export function sendHighlightMessage(biographyId, sessionId, content) {
+  return request(`/biographies/${biographyId}/highlight-sessions/${sessionId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId, content }),
+  })
+}
+
+export function updateOutline(outlineId, chapters) {
+  return request(`/outlines/${outlineId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ chapters }),
+  })
+}
+
+export function publishOutline(outlineId) {
+  return request(`/outlines/${outlineId}/publish`, { method: 'POST' })
+}
+
+export function createOutlineSession(biographyId, outlineId, sessionId = null) {
+  return request('/interview/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ biography_id: biographyId, outline_id: outlineId, session_id: sessionId }),
+  })
+}
+
 export function getInterviewState(sessionId) {
   return request(`/interview/state/${sessionId}`)
 }

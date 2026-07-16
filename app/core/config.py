@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
     redis_url: str = "redis://localhost:6379/0"
+    biography_database_url: str = "postgresql://interview:interview@localhost:5432/interview"
     session_ttl_seconds: int = Field(default=86_400, ge=60)
     dashscope_api_key: str | None = None
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"

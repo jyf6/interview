@@ -12,7 +12,6 @@ from app.data.interview_stage_config import (
     FIRST_INTERVIEW_STAGE,
     INTERVIEW_STAGE_BY_ID,
     INTERVIEW_STAGE_IDS,
-    REMOVED_PROGRESS_FIELDS,
     STAGE_STATUS_VALUES,
 )
 from app.graphs.interview_parent_graph import InterviewParentGraph
@@ -27,6 +26,7 @@ from app.schemas.interview import (
     InterviewStateResponse,
     UserInfoRequest,
     UserInfoResponse,
+    ThreadCommandRequest,
 )
 from app.services.dashscope_llm import DashScopeLLM
 from app.services.interview_agent_service import (
@@ -36,13 +36,28 @@ from app.services.interview_agent_service import (
 from app.services.langgraph_redis_checkpoint import RedisCheckpointSaver
 from app.services.opening_service import OpeningService
 from app.services.interview_session_store import InterviewSessionStore
+from app.services.thread_stack import ThreadStack
+from app.services.semantic_router import SemanticRoute, UnifiedSemanticRouter
+from app.services.collection_point_evaluator import CollectionPointEvaluator
 
 VALID_INTERVIEW_STATES = set(get_args(InterviewState))
+LEGACY_PROGRESS_FIELDS = {
+    "current_stage",
+    "remaining_rounds",
+    "visited_stage_ids",
+    "stage_name",
+    "stage_order",
+    "started_stage_name",
+    "started_stage_order",
+    "stage_plan",
+    "stage_statuses",
+}
 
 
 class InterviewStateMachine:
-    def __init__(self, redis: Redis):
+    def __init__(self, redis: Redis, biography_store: Any | None = None):
         self.redis = redis
+        self.biography_store = biography_store
         self.store = InterviewSessionStore(redis, settings.session_ttl_seconds)
         self.guidance_llm = DashScopeLLM()
         checkpointer = RedisCheckpointSaver(redis)
@@ -90,6 +105,132 @@ class InterviewStateMachine:
             state_interview=progress,
         )
 
+    async def _start_diversion(
+        self,
+        context: InterviewContext,
+        progress: dict[str, Any],
+        user_content: str,
+        route: SemanticRoute,
+    ) -> DialogTurnResponse:
+        current_stage = str(progress.get("active_point_id") or progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+        await self._append_message(context.session_id, "user", user_content, stage_id=current_stage)
+        progress = {
+            **progress,
+            "point_snapshot": {
+                "active_point_id": progress.get("active_point_id"),
+                "active_point": progress.get("active_point") or {},
+                "point_messages": progress.get("point_messages", []),
+                "point_slots": progress.get("point_slots", []),
+                "point_turns": progress.get("point_turns", 0),
+                "point_evaluation": progress.get("point_evaluation", {}),
+            },
+        }
+        updated = ThreadStack.push(
+            progress,
+            diversion_id=f"diversion:{uuid4()}",
+            target=str(route.target_stage_id or "unknown"),
+            mention=user_content,
+        )
+        updated["last_semantic_route"] = route.model_dump(mode="json")
+        updated["diversion_messages"] = [user_content]
+        updated["diversion_slots"] = []
+        await self._set_interview_progress(context.session_id, updated)
+        message = "您刚才提到的这段经历很具体，我们先顺着它聊两句。那件事大概发生在什么时候、什么地方？"
+        await self._append_message(context.session_id, "assistant", message, stage_id=current_stage)
+        return DialogTurnResponse(
+            session_id=context.session_id,
+            current_state=self._current_state(context),
+            previous_state=context.previous_state,
+            action="append_message",
+            message=DialogMessage(content=message),
+            response_source="rule",
+            state_interview=await self._get_or_create_interview_progress(context.session_id),
+        )
+
+    async def start_outline_session(
+        self,
+        session_id: str,
+        biography_id: str,
+        outline_id: str,
+    ) -> DialogTurnResponse:
+        if self.biography_store is None:
+            raise ValueError("biography_store_unavailable")
+        outline = self.biography_store.get_published_outline(outline_id)
+        if outline["biography_id"] != biography_id:
+            raise ValueError("biography_id_mismatch")
+        context = await self._get_or_create_context(session_id)
+        await self._transition(context, "INTERVIEWING")
+        await self._reset_interview_progress(session_id)
+        first_point = next(
+            (point for chapter in outline["chapters"] for point in chapter["points"]),
+            None,
+        )
+        progress = await self._get_or_create_interview_progress(session_id)
+        progress.update({
+            "biography_id": biography_id,
+            "outline_id": outline_id,
+            "active_point_id": str((first_point or {}).get("id") or ""),
+            "active_point": first_point or {},
+        })
+        await self._set_interview_progress(session_id, progress)
+        return DialogTurnResponse(
+            session_id=session_id,
+            current_state=self._current_state(context),
+            previous_state=context.previous_state,
+            action="ready_to_interview",
+            message=DialogMessage(content=str((first_point or {}).get("hook") or "我们从大纲里的第一个故事开始，您愿意先讲讲这段经历吗？")),
+            response_source="rule",
+            state_interview=await self._get_or_create_interview_progress(session_id),
+        )
+
+    async def _continue_diversion(
+        self,
+        context: InterviewContext,
+        progress: dict[str, Any],
+        user_content: str,
+    ) -> DialogTurnResponse:
+        target = str((progress.get("diversion") or {}).get("target") or progress.get("stage_id"))
+        turns = int(progress.get("diversion_turns", 0)) + 1
+        diversion_messages = [*progress.get("diversion_messages", []), user_content]
+        evaluator = CollectionPointEvaluator()
+        slots = evaluator.extract_slots(user_content, progress.get("diversion_slots", []))
+        evaluation = evaluator.evaluate(user_content, slots, turns=turns)
+        await self._append_message(context.session_id, "user", user_content, stage_id=target)
+        user_requested_close = any(token in user_content for token in ("说完了", "没有了", "就这些", "差不多"))
+        should_close = evaluator.should_close(evaluation, user_requested_close=user_requested_close)
+        if should_close:
+            diversion = progress.get("diversion") or {}
+            if self.biography_store is not None:
+                self.biography_store.archive_material(
+                    context.session_id,
+                    str(diversion.get("id") or progress.get("active_thread_id") or "diversion"),
+                    target,
+                    "\n".join(str(item) for item in diversion_messages),
+                    evaluation,
+                )
+            updated = ThreadStack.pop(progress)
+            message = "这段经历我先替您记下了。我们把思绪收一收，接着刚才的话题继续。"
+        else:
+            updated = {
+                **progress,
+                "diversion_turns": turns,
+                "diversion_messages": diversion_messages,
+                "diversion_slots": slots,
+                "diversion_evaluation": evaluation,
+            }
+            message = "那次经历里，除了事情本身，您还记得当时有哪些人在场，以及最后结果怎么样吗？"
+        await self._set_interview_progress(context.session_id, updated)
+        await self._append_message(context.session_id, "assistant", message, stage_id=target)
+        return DialogTurnResponse(
+            session_id=context.session_id,
+            current_state=self._current_state(context),
+            previous_state=context.previous_state,
+            action="append_message",
+            message=DialogMessage(content=message),
+            response_source="rule",
+            state_interview=await self._get_or_create_interview_progress(context.session_id),
+        )
+
     async def handle_dialog_action(self, payload: DialogActionRequest) -> DialogTurnResponse:
         context = await self._get_or_create_context(payload.session_id)
         card_id = normalize_card_id(payload.card_id)
@@ -99,6 +240,72 @@ class InterviewStateMachine:
 
         selected_text = payload.question or payload.selected_text or payload.card_id
         return await self._handle_guidance_card(context, card_id, selected_text)
+
+    async def handle_thread_command(self, payload: ThreadCommandRequest) -> DialogTurnResponse:
+        context = await self._get_or_create_context(payload.session_id)
+        progress = await self._get_or_create_interview_progress(payload.session_id)
+        if payload.command == "complete_point":
+            if self.biography_store is None or not progress.get("outline_id"):
+                raise ValueError("outline_session_required")
+            point_id = str(progress.get("active_point_id") or "")
+            point_messages = progress.get("point_messages") or []
+            if point_messages:
+                self.biography_store.archive_material(
+                    payload.session_id,
+                    str(progress.get("active_thread_id") or "primary"),
+                    point_id,
+                    "\n".join(str(item) for item in point_messages),
+                    progress.get("point_evaluation") or {},
+                )
+            next_point = self.biography_store.next_point(
+                str(progress["outline_id"]), str(progress.get("active_point_id") or "")
+            )
+            if next_point is None:
+                progress.update({
+                    "active_point_id": "",
+                    "active_point": {},
+                    "point_messages": [],
+                    "point_slots": [],
+                    "point_turns": 0,
+                    "point_evaluation": {},
+                    "completed": 1,
+                })
+                message = "这份大纲的故事点已经全部记录下来了。感谢您把这些经历留给我们。"
+            else:
+                progress.update({
+                    "active_point_id": next_point["id"],
+                    "active_point": next_point,
+                    "point_messages": [],
+                    "point_slots": [],
+                    "point_turns": 0,
+                    "point_evaluation": {},
+                })
+                message = str(next_point.get("hook") or "我们接着聊下一个故事点。")
+        elif payload.command == "push":
+            if progress.get("diversion"):
+                raise ValueError("nested_diversion_not_supported")
+            if not payload.target.strip():
+                raise ValueError("target_required")
+            progress = ThreadStack.push(
+                progress,
+                diversion_id=payload.diversion_id or f"diversion:{uuid4()}",
+                target=payload.target,
+                mention=payload.mention,
+            )
+            message = "我先把这件事记下来，咱们顺着您现在的思路聊完，再回到刚才那一段。"
+        else:
+            progress = ThreadStack.pop(progress)
+            message = "这段经历先记在这里。我们把思绪收一收，接着刚才的话题继续。"
+        await self._set_interview_progress(payload.session_id, progress)
+        return DialogTurnResponse(
+            session_id=payload.session_id,
+            current_state=self._current_state(context),
+            previous_state=context.previous_state,
+            action="append_message",
+            message=DialogMessage(content=message),
+            response_source="none",
+            state_interview=await self._get_or_create_interview_progress(payload.session_id),
+        )
 
     async def handle_dialog_text(self, payload: DialogTextRequest) -> DialogTurnResponse:
         with perf_span("dialog.text.total", has_session=bool(payload.session_id), chars=len(payload.content)):
@@ -122,7 +329,26 @@ class InterviewStateMachine:
 
             user_content = payload.content.strip()
             progress = await self._get_or_create_interview_progress(context.session_id)
+            if not (progress.get("outline_id") and progress.get("active_point")):
+                message = "请先在大纲页面生成并发布大纲，再开始文字采访。"
+                await self._append_message(context.session_id, "user", user_content)
+                await self._append_message(context.session_id, "assistant", message)
+                return DialogTurnResponse(
+                    session_id=context.session_id,
+                    current_state=self._current_state(context),
+                    previous_state=context.previous_state,
+                    action="append_message",
+                    message=DialogMessage(content=message),
+                    response_source="rule",
+                    state_interview=progress,
+                )
+            return await self._handle_outline_turn(context, progress, user_content)
             turn_stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
+            if progress.get("diversion"):
+                return await self._continue_diversion(context, progress, user_content)
+            semantic_route = UnifiedSemanticRouter.classify(user_content, turn_stage_id)
+            if semantic_route.route == "cross_topic_event":
+                return await self._start_diversion(context, progress, user_content, semantic_route)
             await self._append_message(
                 context.session_id,
                 "user",
@@ -193,6 +419,105 @@ class InterviewStateMachine:
             message=DialogMessage(content=assistant_content),
             response_source=response_source,
             state_interview=progress,
+        )
+
+    async def _handle_outline_turn(
+        self,
+        context: InterviewContext,
+        progress: dict[str, Any],
+        user_content: str,
+    ) -> DialogTurnResponse:
+        """Run the text-only dynamic collection-point workflow."""
+        point = progress.get("active_point") or {}
+        point_id = str(progress.get("active_point_id") or point.get("id") or "")
+        target = str((progress.get("diversion") or {}).get("target") or point_id)
+        if progress.get("diversion"):
+            return await self._continue_diversion(context, progress, user_content)
+
+        outline_points: list[dict[str, str]] = []
+        if self.biography_store is not None and progress.get("outline_id"):
+            outline = self.biography_store.get_published_outline(str(progress["outline_id"]))
+            outline_points = [
+                point
+                for chapter in outline.get("chapters", [])
+                for point in chapter.get("points", [])
+            ]
+        route = UnifiedSemanticRouter.classify_outline(user_content, point_id, outline_points)
+        point_text = f"{point.get('title', '')} {point.get('hook', '')}"
+        if route.route == "cross_topic_event" and route.target_stage_id:
+            keywords = UnifiedSemanticRouter.STAGE_KEYWORDS.get(route.target_stage_id, ())
+            if any(keyword in point_text for keyword in keywords):
+                route = SemanticRoute(reason="内容仍围绕当前采集点")
+        if route.route == "cross_topic_event":
+            return await self._start_diversion(context, progress, user_content, route)
+        await self._append_message(context.session_id, "user", user_content, stage_id=target)
+
+        messages = [*progress.get("point_messages", []), user_content]
+        evaluator = CollectionPointEvaluator(point.get("target_slots") or None)
+        turns = int(progress.get("point_turns", 0)) + 1
+        slots = evaluator.extract_slots(user_content, progress.get("point_slots", []))
+        evaluation = evaluator.evaluate(user_content, slots, turns=turns)
+        requested_close = any(token in user_content for token in ("说完了", "没有了", "就这些", "差不多", "跳过"))
+        should_close = route.route in {"skip", "resistance_turn"} or evaluator.should_close(
+            evaluation, user_requested_close=requested_close
+        )
+
+        if should_close:
+            if self.biography_store is not None:
+                self.biography_store.archive_material(
+                    context.session_id,
+                    str(progress.get("active_thread_id") or "primary"),
+                    point_id,
+                    "\n".join(messages),
+                    evaluation,
+                )
+            next_point = self.biography_store.next_point(str(progress["outline_id"]), point_id)
+            updated = {
+                **progress,
+                "point_messages": [],
+                "point_slots": [],
+                "point_turns": 0,
+                "point_evaluation": {},
+            }
+            if next_point is None:
+                updated.update({"active_point_id": "", "active_point": {}, "completed": 1})
+                assistant_content = "这一份大纲的故事点已经全部记录下来了。谢谢您把这些人生经历分享给我。"
+                await self._transition(context, "end")
+            else:
+                updated.update({"active_point_id": next_point["id"], "active_point": next_point})
+                assistant_content = str(next_point.get("hook") or "我们接着聊下一个故事点，您愿意从这段经历说起吗？")
+        else:
+            updated = {
+                **progress,
+                "point_messages": messages[-12:],
+                "point_slots": slots,
+                "point_turns": turns,
+                "point_evaluation": evaluation,
+            }
+            missing = evaluation.get("missing_slots") or []
+            prompts = {
+                "when": "这件事大概发生在什么时候？",
+                "where": "当时是在什么地方？",
+                "people": "那时还有哪些人和您一起经历？",
+                "trigger": "事情是因为什么开始的？",
+                "action": "接下来具体发生了什么？",
+                "outcome": "最后结果怎么样？",
+                "sensory_detail": "您还记得当时看到、听到或感受到的细节吗？",
+                "feeling": "那一刻您心里是什么感受？",
+                "meaning": "这件事后来对您的人生产生了什么影响？",
+            }
+            assistant_content = prompts.get(missing[0], "关于这段经历，您还愿意再分享一点细节吗？")
+
+        await self._set_interview_progress(context.session_id, updated)
+        await self._append_message(context.session_id, "assistant", assistant_content, stage_id=target)
+        return DialogTurnResponse(
+            session_id=context.session_id,
+            current_state=self._current_state(context),
+            previous_state=context.previous_state,
+            action="append_message",
+            message=DialogMessage(content=assistant_content),
+            response_source="rule",
+            state_interview=await self._interview_state_view(context.session_id, updated),
         )
 
     async def get_state(self, session_id: str) -> InterviewStateResponse:
@@ -327,56 +652,83 @@ class InterviewStateMachine:
         await self.store.delete(key)
 
     async def _reset_interview_progress(self, session_id: str) -> None:
+        await self._delete_interview_history(session_id)
+        await self._set_interview_progress(session_id, self._initial_interview_progress())
+
+    async def _delete_interview_history(self, session_id: str) -> None:
         await self._redis_delete(self._interview_progress_key(session_id))
         await self._redis_delete(self._messages_key(session_id))
         await self.interview_agent.delete_checkpoint_thread(session_id)
         await self.interview_graph.delete_checkpoint_thread(session_id)
-        await self._set_interview_progress(
-            session_id,
-            {
-                "stage_id": FIRST_INTERVIEW_STAGE,
-                "completed": 0,
-                "pending_stage_mentions": {},
-                "cross_stage_mentions": [],
-                "cross_stage_current": None,
-                "started_stage_id": None,
-                "stage_flow": [],
-                "stage_outcomes": {},
-            },
-        )
+
+    @staticmethod
+    def _initial_interview_progress() -> dict[str, Any]:
+        return {
+            "stage_id": FIRST_INTERVIEW_STAGE,
+            "completed": 0,
+            "pending_stage_mentions": {},
+            "cross_stage_mentions": [],
+            "cross_stage_current": None,
+            "started_stage_id": None,
+            "stage_flow": [],
+            "stage_outcomes": {},
+            "active_thread_id": "primary",
+            "active_point_id": "",
+            "point_snapshot": {},
+            "thread_stack": [],
+            "diversion": None,
+            "diversion_turns": 0,
+            "last_semantic_route": None,
+            "diversion_messages": [],
+            "diversion_slots": [],
+            "diversion_evaluation": {},
+            "biography_id": None,
+            "outline_id": None,
+            "active_point": {},
+            "point_messages": [],
+            "point_slots": [],
+            "point_turns": 0,
+            "point_evaluation": {},
+        }
 
     async def _get_or_create_interview_progress(self, session_id: str) -> dict[str, Any]:
         checkpoint_getter = getattr(self.interview_graph, "get_checkpointed_state", None)
         if callable(checkpoint_getter):
             checkpoint_progress = await checkpoint_getter(session_id)
             if checkpoint_progress:
+                if self._has_legacy_progress(checkpoint_progress):
+                    await self._reset_interview_progress(session_id)
+                    return await self._interview_state_view(session_id, self._initial_interview_progress())
+                raw_checkpoint = await self._redis_get(self._interview_progress_key(session_id))
+                try:
+                    stored = json.loads(raw_checkpoint) if raw_checkpoint else {}
+                except json.JSONDecodeError:
+                    stored = {}
+                checkpoint_progress = {
+                    **checkpoint_progress,
+                    **self._thread_progress_fields(stored),
+                }
                 return await self._interview_state_view(session_id, checkpoint_progress)
 
         raw = await self._redis_get(self._interview_progress_key(session_id))
         if not raw:
-            progress = {
-                "stage_id": FIRST_INTERVIEW_STAGE,
-                "completed": 0,
-                "pending_stage_mentions": {},
-                "cross_stage_mentions": [],
-                "cross_stage_current": None,
-                "started_stage_id": None,
-                "stage_flow": [],
-                "stage_outcomes": {},
-            }
+            progress = self._initial_interview_progress()
             await self._set_interview_progress(session_id, progress)
             return await self._interview_state_view(session_id, progress)
 
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            data = {}
+            await self._reset_interview_progress(session_id)
+            return await self._interview_state_view(session_id, self._initial_interview_progress())
+
+        if not isinstance(data, dict) or self._has_legacy_progress(data):
+            await self._reset_interview_progress(session_id)
+            return await self._interview_state_view(session_id, self._initial_interview_progress())
 
         stage_id = data.get("stage_id") if data.get("stage_id") in INTERVIEW_STAGE_BY_ID else FIRST_INTERVIEW_STAGE
         completed = 1 if str(data.get("completed")) == "1" else 0
-        completed_stage_ids = self._valid_stage_id_list(
-            data.get("completed_stage_ids") or data.get("visited_stage_ids")
-        )
+        completed_stage_ids = self._valid_stage_id_list(data.get("completed_stage_ids"))
         pending_stage_ids = self._valid_stage_id_list(data.get("pending_stage_ids"))
         pending_stage_mentions = self._valid_stage_mentions(data.get("pending_stage_mentions"))
         cross_stage_mentions = self._valid_cross_stage_mentions(data.get("cross_stage_mentions"))
@@ -389,23 +741,14 @@ class InterviewStateMachine:
         started_stage_id = data.get("started_stage_id") if data.get("started_stage_id") in INTERVIEW_STAGE_BY_ID else None
         stage_flow = self._valid_stage_flow(data.get("stage_flow"))
         stage_outcomes = self._valid_stage_outcomes(data.get("stage_outcomes"))
-        legacy_statuses = self._valid_stage_statuses(
-            data.get("stage_statuses"),
-            stage_id,
-            completed_stage_ids,
-            pending_stage_ids,
-        )
+        thread_fields = self._thread_progress_fields(data)
         completed_stage_ids = self._merge_stage_id_lists(
             completed_stage_ids,
-            self._completed_stage_ids(legacy_statuses),
             self._completed_stage_ids_from_flow(stage_flow),
         )
         pending_stage_ids = [
             stage_id
-            for stage_id in self._merge_stage_id_lists(
-                pending_stage_ids,
-                [stage_id for stage_id in INTERVIEW_STAGE_IDS if legacy_statuses.get(stage_id) == "pending"],
-            )
+            for stage_id in self._merge_stage_id_lists(pending_stage_ids)
             if stage_id not in completed_stage_ids
         ]
         if not completed:
@@ -428,12 +771,13 @@ class InterviewStateMachine:
             "started_stage_id": started_stage_id,
             "stage_flow": stage_flow,
             "stage_outcomes": stage_outcomes,
+            **thread_fields,
         })
         await self._set_interview_progress(session_id, progress)
         return await self._interview_state_view(session_id, progress)
 
     async def _set_interview_progress(self, session_id: str, progress: dict[str, Any]) -> None:
-        stage_id = str(progress.get("stage_id") or progress.get("current_stage") or FIRST_INTERVIEW_STAGE)
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
         if stage_id not in INTERVIEW_STAGE_BY_ID:
             stage_id = FIRST_INTERVIEW_STAGE
         await self._overwrite_state_value(
@@ -451,6 +795,14 @@ class InterviewStateMachine:
                     else None,
                     "stage_flow": self._valid_stage_flow(progress.get("stage_flow")),
                     "stage_outcomes": self._valid_stage_outcomes(progress.get("stage_outcomes")),
+                    "active_thread_id": progress.get("active_thread_id", "primary"),
+                    "active_point_id": progress.get("active_point_id", ""),
+                    "point_snapshot": progress.get("point_snapshot", {}),
+                    "thread_stack": progress.get("thread_stack", []),
+                    "diversion": progress.get("diversion"),
+                    "diversion_turns": progress.get("diversion_turns", 0),
+                    "last_semantic_route": progress.get("last_semantic_route"),
+                    **self._thread_progress_fields(progress),
                 },
                 ensure_ascii=False,
             ),
@@ -884,35 +1236,6 @@ class InterviewStateMachine:
         ]
 
     @staticmethod
-    def _valid_stage_statuses(
-        value: Any,
-        current_stage_id: str,
-        completed_stage_ids: list[str],
-        pending_stage_ids: list[str],
-    ) -> dict[str, str]:
-        statuses: dict[str, str] = {stage_id: "not_started" for stage_id in INTERVIEW_STAGE_IDS}
-        if isinstance(value, dict):
-            for key, raw_status in value.items():
-                stage_id = str(key)
-                status = str(raw_status)
-                if stage_id in INTERVIEW_STAGE_BY_ID and status in STAGE_STATUS_VALUES:
-                    statuses[stage_id] = status
-        for stage_id in completed_stage_ids:
-            statuses[stage_id] = "completed"
-        for stage_id in pending_stage_ids:
-            if statuses.get(stage_id) != "completed":
-                statuses[stage_id] = "pending"
-        for stage_id, status in list(statuses.items()):
-            if status == "active" and stage_id != current_stage_id:
-                statuses[stage_id] = "not_started"
-        if current_stage_id in INTERVIEW_STAGE_BY_ID:
-            if statuses.get(current_stage_id) != "completed":
-                statuses[current_stage_id] = "active"
-            if current_stage_id in pending_stage_ids:
-                statuses[current_stage_id] = "active"
-        return statuses
-
-    @staticmethod
     def _valid_stage_flow(value: Any) -> list[dict[str, Any]]:
         if not isinstance(value, list):
             return []
@@ -930,9 +1253,6 @@ class InterviewStateMachine:
                 "stage_id": stage_id,
                 "status": status,
             }
-            started_by = str(item.get("started_by") or "").strip()
-            if started_by:
-                entry["started_by"] = started_by[:40]
             completed_ids = InterviewStateMachine._valid_main_question_ids(item.get("completed_main_question_ids"))
             if completed_ids:
                 entry["completed_main_question_ids"] = completed_ids
@@ -955,17 +1275,22 @@ class InterviewStateMachine:
 
     @staticmethod
     def _without_removed_progress_fields(progress: dict[str, Any]) -> dict[str, Any]:
-        cleaned = {key: value for key, value in progress.items() if key not in REMOVED_PROGRESS_FIELDS}
-        if "completed_stage_ids" not in cleaned and "visited_stage_ids" in progress:
-            cleaned["completed_stage_ids"] = InterviewStateMachine._valid_stage_id_list(
-                progress.get("visited_stage_ids")
-            )
-        return cleaned
+        return {key: value for key, value in progress.items() if key not in LEGACY_PROGRESS_FIELDS}
+
+    @staticmethod
+    def _has_legacy_progress(progress: dict[str, Any]) -> bool:
+        if any(key in progress for key in LEGACY_PROGRESS_FIELDS):
+            return True
+        stage_flow = progress.get("stage_flow")
+        return isinstance(stage_flow, list) and any(
+            isinstance(item, dict) and "started_by" in item
+            for item in stage_flow
+        )
 
     @staticmethod
     def _hydrate_progress_view(progress: dict[str, Any]) -> dict[str, Any]:
         progress = InterviewStateMachine._sync_stage_flow(progress)
-        stage_id = str(progress.get("stage_id") or progress.get("current_stage") or FIRST_INTERVIEW_STAGE)
+        stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
         if stage_id not in INTERVIEW_STAGE_BY_ID:
             stage_id = FIRST_INTERVIEW_STAGE
         completed_stage_ids = InterviewStateMachine._completed_stage_id_list(progress)
@@ -995,6 +1320,43 @@ class InterviewStateMachine:
             "started_stage_id": started_stage_id if started_stage_id in INTERVIEW_STAGE_BY_ID else None,
             "stage_flow": InterviewStateMachine._valid_stage_flow(progress.get("stage_flow")),
             "stage_outcomes": InterviewStateMachine._valid_stage_outcomes(progress.get("stage_outcomes")),
+            **InterviewStateMachine._thread_progress_fields(progress),
+        }
+
+    @staticmethod
+    def _thread_progress_fields(progress: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "active_thread_id": str(progress.get("active_thread_id") or "primary")[:80],
+            "active_point_id": str(progress.get("active_point_id") or "")[:120],
+            "point_snapshot": progress.get("point_snapshot") if isinstance(progress.get("point_snapshot"), dict) else {},
+            "thread_stack": ThreadStack.normalize(progress.get("thread_stack")),
+            "diversion": progress.get("diversion") if isinstance(progress.get("diversion"), dict) else None,
+            "diversion_turns": int(progress.get("diversion_turns", 0)),
+            "last_semantic_route": progress.get("last_semantic_route")
+            if isinstance(progress.get("last_semantic_route"), dict)
+            else None,
+            "diversion_messages": [str(item)[:2000] for item in progress.get("diversion_messages", [])[-8:]]
+            if isinstance(progress.get("diversion_messages"), list)
+            else [],
+            "diversion_slots": [str(item)[:40] for item in progress.get("diversion_slots", [])]
+            if isinstance(progress.get("diversion_slots"), list)
+            else [],
+            "diversion_evaluation": progress.get("diversion_evaluation")
+            if isinstance(progress.get("diversion_evaluation"), dict)
+            else {},
+            "biography_id": str(progress.get("biography_id") or "") or None,
+            "outline_id": str(progress.get("outline_id") or "") or None,
+            "active_point": progress.get("active_point") if isinstance(progress.get("active_point"), dict) else {},
+            "point_messages": [str(item)[:2000] for item in progress.get("point_messages", [])[-12:]]
+            if isinstance(progress.get("point_messages"), list)
+            else [],
+            "point_slots": [str(item)[:40] for item in progress.get("point_slots", [])]
+            if isinstance(progress.get("point_slots"), list)
+            else [],
+            "point_turns": int(progress.get("point_turns", 0)),
+            "point_evaluation": progress.get("point_evaluation")
+            if isinstance(progress.get("point_evaluation"), dict)
+            else {},
         }
 
     @staticmethod
@@ -1004,7 +1366,7 @@ class InterviewStateMachine:
         event: str = "enter",
         event_stage_id: str | None = None,
     ) -> dict[str, Any]:
-        current_stage_id = str(progress.get("stage_id") or progress.get("current_stage") or FIRST_INTERVIEW_STAGE)
+        current_stage_id = str(progress.get("stage_id") or FIRST_INTERVIEW_STAGE)
         completed_stage_ids = InterviewStateMachine._completed_stage_id_list(progress)
         pending = InterviewStateMachine._pending_stage_id_list(progress)
         flow = InterviewStateMachine._valid_stage_flow(progress.get("stage_flow"))
@@ -1052,7 +1414,6 @@ class InterviewStateMachine:
                 current_stage_id,
                 "active",
                 progress,
-                started_by="initial" if event == "start" else "state_machine",
             )
         return {
             **InterviewStateMachine._without_removed_progress_fields(progress),
@@ -1067,8 +1428,6 @@ class InterviewStateMachine:
         stage_id: str,
         status: str,
         progress: dict[str, Any],
-        *,
-        started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         if stage_id not in INTERVIEW_STAGE_BY_ID:
             return flow
@@ -1077,21 +1436,17 @@ class InterviewStateMachine:
             "stage_id": stage_id,
             "status": status,
         }
-        if started_by:
-            entry["started_by"] = started_by
         if existing_index is None:
             entry["entered_at"] = datetime.now(UTC).isoformat()
         else:
             existing = flow[existing_index]
             if existing.get("entered_at"):
                 entry["entered_at"] = existing["entered_at"]
-            if existing.get("started_by") and not started_by:
-                entry["started_by"] = existing["started_by"]
             if existing.get("completed_main_question_ids") and stage_id != str(
-                progress.get("stage_id") or progress.get("current_stage") or ""
+                progress.get("stage_id") or ""
             ):
                 entry["completed_main_question_ids"] = existing["completed_main_question_ids"]
-        if stage_id == str(progress.get("stage_id") or progress.get("current_stage") or ""):
+        if stage_id == str(progress.get("stage_id") or ""):
             completed_ids = InterviewStateMachine._valid_main_question_ids(progress.get("completed_main_question_ids"))
             if completed_ids:
                 entry["completed_main_question_ids"] = completed_ids
@@ -1109,22 +1464,10 @@ class InterviewStateMachine:
         return updated
 
     @staticmethod
-    def _completed_stage_ids(stage_statuses: dict[str, str]) -> list[str]:
-        return [stage_id for stage_id in INTERVIEW_STAGE_IDS if stage_statuses.get(stage_id) == "completed"]
-
-    @staticmethod
     def _completed_stage_id_list(progress: dict[str, Any]) -> list[str]:
-        legacy_statuses = InterviewStateMachine._valid_stage_statuses(
-            progress.get("stage_statuses"),
-            str(progress.get("stage_id") or progress.get("current_stage") or FIRST_INTERVIEW_STAGE),
-            InterviewStateMachine._valid_stage_id_list(progress.get("completed_stage_ids")),
-            InterviewStateMachine._valid_stage_id_list(progress.get("pending_stage_ids")),
-        )
         return InterviewStateMachine._merge_stage_id_lists(
             InterviewStateMachine._valid_stage_id_list(progress.get("completed_stage_ids")),
-            InterviewStateMachine._valid_stage_id_list(progress.get("visited_stage_ids")),
             InterviewStateMachine._completed_stage_ids_from_flow(progress.get("stage_flow")),
-            InterviewStateMachine._completed_stage_ids(legacy_statuses),
         )
 
     @staticmethod
@@ -1239,7 +1582,7 @@ class InterviewStateMachine:
             "content": content,
             "created_at": datetime.now(UTC).isoformat(),
         }
-        if stage_id in INTERVIEW_STAGE_BY_ID:
+        if stage_id:
             message["stage_id"] = stage_id
         await self._redis_rpush(self._messages_key(session_id), json.dumps(message, ensure_ascii=False))
 
@@ -1256,7 +1599,7 @@ class InterviewStateMachine:
             if role in {"user", "assistant"} and isinstance(content, str):
                 message = {"role": role, "content": content}
                 stage_id = data.get("stage_id")
-                if stage_id in INTERVIEW_STAGE_BY_ID:
+                if isinstance(stage_id, str) and stage_id:
                     message["stage_id"] = stage_id
                 messages.append(message)
         return messages
@@ -1264,18 +1607,11 @@ class InterviewStateMachine:
     async def _get_stage_messages(self, session_id: str, stage_id: str) -> list[dict[str, str]]:
         messages = await self._get_messages(session_id)
         if stage_id not in INTERVIEW_STAGE_BY_ID:
-            return messages
-        scoped = [
-            {"role": message["role"], "content": message["content"]}
-            for message in messages
-            if message.get("stage_id") == stage_id
-        ]
-        if scoped:
-            return scoped
+            return []
         return [
             {"role": message["role"], "content": message["content"]}
             for message in messages
-            if "stage_id" not in message
+            if message.get("stage_id") == stage_id
         ]
 
     @staticmethod
@@ -1390,14 +1726,7 @@ class InterviewStateMachine:
 
     @staticmethod
     def _decode_state(raw: str) -> str:
-        if not raw.startswith("{"):
-            return raw if raw in VALID_INTERVIEW_STATES else "INIT"
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return "INIT"
-        state = data.get("state") or data.get("current_state")
-        return state if isinstance(state, str) and state in VALID_INTERVIEW_STATES else "INIT"
+        return raw if raw in VALID_INTERVIEW_STATES else "INIT"
 
     @staticmethod
     def _current_state(context: InterviewContext) -> InterviewState:

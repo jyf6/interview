@@ -5,6 +5,8 @@ import {
   saveUserInfo,
   sendDialogAction,
   sendDialogText,
+  sendSessionCommand,
+  createOutlineSession,
   startDialog,
   streamOpening,
 } from '../api/interview'
@@ -73,6 +75,10 @@ export function useInterviewDialog() {
     if (!activeInterviewStage.value) return '待开始'
     if (interviewAwaitingStageCompletion.value) return '等待收尾'
     return '进行中'
+  })
+  const activeCollectionPoint = computed(() => interviewState.value?.active_point ?? null)
+  const canCompleteCollectionPoint = computed(() => {
+    return currentState.value === 'INTERVIEWING' && Boolean(activeCollectionPoint.value?.id) && !loading.value
   })
   const canType = computed(() => currentState.value === 'READY_TO_INTERVIEW' || currentState.value === 'INTERVIEWING')
   const cardsTitle = computed(() => {
@@ -245,6 +251,27 @@ export function useInterviewDialog() {
     })
   }
 
+  async function completeCollectionPoint() {
+    if (!sessionId.value || !canCompleteCollectionPoint.value) return
+    await run(async () => {
+      const data = await sendSessionCommand(sessionId.value, { command: 'complete_point' })
+      applyTurn(data)
+      await refreshState()
+    })
+  }
+
+  async function startPublishedOutline(biographyId, outlineId) {
+    if (!biographyId || !outlineId || loading.value) return
+    await run(async () => {
+      const data = await createOutlineSession(biographyId, outlineId, sessionId.value || null)
+      messages.value = []
+      cards.value = []
+      cardGroup.value = 'none'
+      applyTurn(data)
+      startStatePolling()
+    })
+  }
+
   async function refreshState() {
     if (!sessionId.value) return
     try {
@@ -360,6 +387,8 @@ export function useInterviewDialog() {
     interviewCompletedText,
     interviewStageProgressText,
     interviewStageStatusText,
+    activeCollectionPoint,
+    canCompleteCollectionPoint,
     canType,
     cardsTitle,
     resetDialog,
@@ -367,6 +396,8 @@ export function useInterviewDialog() {
     chooseCard,
     sendCustomQuestion,
     sendText,
+    completeCollectionPoint,
+    startPublishedOutline,
     refreshState,
     updateUserInfoField,
     submitUserInfo,

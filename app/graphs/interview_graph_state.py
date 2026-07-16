@@ -34,6 +34,13 @@ class ParentState(TypedDict, total=False):
     response_stage_id: str | None
     requested_stage_jump: str | None
     stage_event: "StageEvent | None"
+    active_thread_id: str
+    active_point_id: str
+    point_snapshot: dict[str, Any]
+    thread_stack: list[dict[str, Any]]
+    diversion: dict[str, Any] | None
+    diversion_turns: int
+    last_semantic_route: dict[str, Any] | None
 
 
 class ChildState(TypedDict, total=False):

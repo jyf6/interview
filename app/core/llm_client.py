@@ -21,6 +21,8 @@ class LLMClient:
     def get_llm(self, *, temperature: float = 0.7, max_tokens: int = 1024) -> Any:
         from langchain_openai import ChatOpenAI
 
+        if not settings.dashscope_api_key:
+            raise RuntimeError("model_unavailable: DASHSCOPE_API_KEY is not configured")
         cache_key = (temperature, max_tokens)
         if cache_key not in self._llms:
             self._llms[cache_key] = ChatOpenAI(
@@ -54,7 +56,10 @@ class LLMClient:
         ]
         response = self.get_llm(temperature=temperature, max_tokens=max_tokens).invoke(messages)
         content = response.content if hasattr(response, "content") else str(response)
-        return content.strip() if isinstance(content, str) else str(content)
+        content = content.strip() if isinstance(content, str) else str(content).strip()
+        if not content:
+            raise RuntimeError("model_unavailable: empty model response")
+        return content
 
     async def chat_stream(
         self,
@@ -105,7 +110,7 @@ class LLMClient:
                 except json.JSONDecodeError:
                     pass
             logger.warning("LLM JSON 解析失败，返回原文: %s", text[:200])
-            return {"raw_output": text, "parse_error": True}
+            raise ValueError("model_invalid_json_response") from None
 
 
 interview_llm = LLMClient(

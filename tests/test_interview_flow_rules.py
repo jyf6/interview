@@ -497,7 +497,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
         self.assertEqual(answered["completed_main_question_ids"], list(range(1, 9)))
         self.assertEqual(answered["supplement_answered"], 1)
 
-    def test_stage_messages_include_only_current_stage_with_legacy_fallback(self) -> None:
+    def test_stage_messages_include_only_current_stage_without_legacy_fallback(self) -> None:
         async def run_case() -> None:
             service = InterviewStateMachine(MemoryRedis())  # type: ignore[arg-type]
             await service._append_message("session-1", "assistant", "开场")
@@ -509,7 +509,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
             s3_messages = await service._get_stage_messages("session-1", "S3")
 
             self.assertEqual([message["content"] for message in s1_messages], ["童年回答", "童年问题"])
-            self.assertEqual([message["content"] for message in s3_messages], ["开场"])
+            self.assertEqual(s3_messages, [])
 
         asyncio.run(run_case())
 
@@ -738,10 +738,9 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "remaining_rounds": 6,
                 "completed": 0,
                 "completed_main_question_ids": [1, 4],
-                "visited_stage_ids": ["S1"],
+                "completed_stage_ids": ["S1"],
                 "pending_stage_ids": ["S4"],
                 "pending_stage_mentions": {"S4": "退休后清闲一些"},
-                "stage_statuses": {"S1": "completed", "S2": "not_started", "S3": "active", "S4": "pending"},
                 "stage_flow": [
                     {"stage_id": "S1", "stage_name": "童年时光", "status": "completed"},
                     {"stage_id": "S3", "stage_name": "人生转折", "status": "active"},
@@ -766,6 +765,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
         self.assertEqual(flow_statuses["S1"], "completed")
         self.assertEqual(flow_statuses["S3"], "active")
         self.assertEqual(flow_statuses["S4"], "pending")
+        self.assertTrue(all("started_by" not in item for item in view["stage_flow"]))
         self.assertNotIn("stage_name", view["stage_flow"][0])
         self.assertNotIn("stage_name", view["stage_flow"][1])
         self.assertEqual(
@@ -862,7 +862,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
 
         asyncio.run(run_case())
 
-    def test_legacy_redis_progress_is_migrated_to_langgraph_checkpoint(self) -> None:
+    def test_legacy_redis_progress_is_deleted_and_replaced_with_initial_progress(self) -> None:
         async def run_case() -> None:
             redis = MemoryRedis()
             service = InterviewStateMachine(redis)  # type: ignore[arg-type]
@@ -883,22 +883,17 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 service._interview_progress_key("session-legacy"),
                 json.dumps(legacy_progress, ensure_ascii=False),
             )
+            await service._append_message("session-legacy", "user", "old message", stage_id="S3")
 
             restored = await service._get_or_create_interview_progress("session-legacy")
-            checkpoint = await service.interview_agent.get_checkpointed_interview_progress("session-legacy")
+            messages = await service._get_messages("session-legacy")
 
-            self.assertIsNotNone(checkpoint)
-            assert checkpoint is not None
-            self.assertEqual(restored["stage_id"], "S3")
-            self.assertEqual(checkpoint["stage_id"], "S3")
-            self.assertEqual(checkpoint["completed_stage_ids"], ["S1"])
-            self.assertEqual(checkpoint["pending_stage_ids"], ["S4"])
-            self.assertEqual(checkpoint["completed_main_question_ids"], [1, 2, 3])
-            self.assertNotIn("stage_statuses", checkpoint)
-            self.assertEqual(
-                {item["stage_id"]: item["status"] for item in checkpoint["stage_flow"]},
-                {"S1": "completed", "S3": "active", "S4": "pending"},
-            )
+            self.assertEqual(restored["stage_id"], "S1")
+            self.assertEqual(restored["completed_stage_ids"], [])
+            self.assertEqual(restored["pending_stage_ids"], [])
+            self.assertEqual(restored["completed_main_question_ids"], [])
+            self.assertEqual(messages, [])
+            self.assertTrue(all("started_by" not in item for item in restored["stage_flow"]))
 
         asyncio.run(run_case())
 
@@ -948,9 +943,8 @@ class InterviewFlowRulesTest(unittest.TestCase):
             "stage_id": "S3",
             "remaining_rounds": 5,
             "completed": 0,
-            "visited_stage_ids": ["S1"],
+            "completed_stage_ids": ["S1"],
             "pending_stage_ids": [],
-            "stage_statuses": {"S1": "completed", "S3": "active"},
         }
         detection = InterviewStageDetectionResult(stage_code="S1")
 
@@ -1093,7 +1087,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S1",
                 "remaining_rounds": 0,
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": [],
                 "awaiting_stage_completion": 1,
                 "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
@@ -1123,7 +1117,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S3",
                 "remaining_rounds": 0,
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": [],
                 "awaiting_stage_completion": 1,
                 "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
@@ -1151,7 +1145,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S3",
                 "remaining_rounds": 1,
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": [],
                 "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
@@ -1176,7 +1170,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S3",
                 "remaining_rounds": 1,
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": ["S4"],
                 "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
@@ -1201,7 +1195,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S3",
                 "remaining_rounds": 1,
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": ["S4"],
                 "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
                 "pending_stage_mentions": {"S4": "现在退休后倒是轻松多了"},
@@ -1227,7 +1221,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S3",
                 "remaining_rounds": 0,
                 "completed": 0,
-                "visited_stage_ids": [],
+                "completed_stage_ids": [],
                 "pending_stage_ids": ["S4"],
                 "pending_stage_mentions": {"S4": "现在退休后倒是轻松多了"},
                 "awaiting_stage_completion": 1,
@@ -1351,7 +1345,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S1",
                 "remaining_rounds": 1,
                 "completed": 0,
-                "visited_stage_ids": ["S3"],
+                "completed_stage_ids": ["S3"],
                 "pending_stage_ids": [],
                 "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
             }
@@ -1381,7 +1375,7 @@ class InterviewFlowRulesTest(unittest.TestCase):
                 "stage_id": "S5",
                 "remaining_rounds": 1,
                 "completed": 0,
-                "visited_stage_ids": ["S1", "S2", "S3", "S4"],
+                "completed_stage_ids": ["S1", "S2", "S3", "S4"],
                 "pending_stage_ids": [],
                 "completed_main_question_ids": [1, 2, 3, 4, 5, 6, 7, 8],
                 "active_main_question_id": 9,

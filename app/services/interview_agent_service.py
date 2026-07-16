@@ -141,7 +141,7 @@ class InterviewReplyResult(BaseModel):
 
 class InterviewOpeningResult(BaseModel):
     reply: str
-    response_source: Literal["none"] = "none"
+    response_source: Literal["llm"] = "llm"
 
 
 class InterviewTurnGraphState(TypedDict, total=False):
@@ -169,7 +169,15 @@ class InterviewAgentService:
         stage_description: str,
     ) -> InterviewOpeningResult:
         with perf_span("interview.icebreaker.total", history=len(recent_messages)):
-            return InterviewOpeningResult(reply=load_prompt(ICEBREAKER_PROMPT), response_source="none")
+            prompt = load_prompt(ICEBREAKER_PROMPT)
+            raw = await asyncio.to_thread(
+                interview_llm.chat,
+                prompt,
+                f"当前阶段：{stage_description}\n请生成一句自然的开场追问。",
+                temperature=0.5,
+                max_tokens=256,
+            )
+            return InterviewOpeningResult(reply=raw, response_source="llm")
 
     async def generate_turn(
         self,

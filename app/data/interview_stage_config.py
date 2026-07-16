@@ -111,16 +111,6 @@ FIRST_INTERVIEW_STAGE = INTERVIEW_STAGES[0]["id"]
 LAST_INTERVIEW_STAGE = INTERVIEW_STAGES[-1]["id"]
 INTERVIEW_STAGE_IDS = [stage["id"] for stage in INTERVIEW_STAGES]
 STAGE_STATUS_VALUES = {"not_started", "pending", "active", "completed"}
-REMOVED_PROGRESS_FIELDS = {
-    "remaining_rounds",
-    "visited_stage_ids",
-    "stage_name",
-    "stage_order",
-    "started_stage_name",
-    "started_stage_order",
-    "stage_plan",
-    "stage_statuses",
-}
 STAGE_TASK_BY_REMAINING_ROUNDS = {
     4: (
         "本轮采访任务：环境与处境。下一问要覆盖这段时期的生活或工作环境、时代条件、家庭或个人处境，"
